@@ -878,6 +878,254 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
   );
 }
 
+// ---------- 주간 스케줄 일괄 가져오기 ----------
+function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
+  useEsc(onClose);
+  const [text,setText]=useState('');
+  const [items,setItems]=useState([]);
+  const [err,setErr]=useState('');
+  const [busy,setBusy]=useState(false);
+  const [trainer,setTrainer]=useState('서민기');
+  const [lessonName,setLessonName]=useState('대표 PT');
+  const [duration,setDuration]=useState('60');
+  const [allowNoMembership,setAllowNoMembership]=useState(false);
+  const [skipConflicts,setSkipConflicts]=useState(true);
+  const [result,setResult]=useState(null);
+
+  function statusBadge(status){
+    const map={
+      ready:['b-활성','등록가능'],
+      registered:['b-활성','등록완료'],
+      duplicate:['b-임박','중복'],
+      conflict:['b-만료','시간겹침'],
+      missing_member:['b-만료','회원없음'],
+      ambiguous_member:['b-만료','동명이인'],
+      no_membership:['b-임박','회원권없음'],
+      invalid:['b-만료','형식오류'],
+      error:['b-만료','오류']
+    };
+    const [cls,label]=map[status]||['b-만료',status||'확인'];
+    return <span className={'badge '+cls}>{label}</span>;
+  }
+
+  function readPayload(){
+    const raw=text.trim();
+    if(!raw) throw new Error('스케줄러에서 복사한 JSON을 붙여넣어주세요.');
+    try{ return JSON.parse(raw); }
+    catch(e){}
+    const objectStart=raw.indexOf('{'), objectEnd=raw.lastIndexOf('}');
+    const arrayStart=raw.indexOf('['), arrayEnd=raw.lastIndexOf(']');
+    if(objectStart>=0 && objectEnd>objectStart) return JSON.parse(raw.slice(objectStart,objectEnd+1));
+    if(arrayStart>=0 && arrayEnd>arrayStart) return JSON.parse(raw.slice(arrayStart,arrayEnd+1));
+    throw new Error('JSON 형식을 찾지 못했습니다.');
+  }
+
+  function payloadRows(payload){
+    if(Array.isArray(payload)) return payload;
+    if(payload && Array.isArray(payload.rows)) return payload.rows;
+    if(payload && Array.isArray(payload.results)) return payload.results;
+    if(payload && Array.isArray(payload.items)) return payload.items;
+    return [];
+  }
+
+  function buildTime(date,start,end,durMin){
+    const cleanStart=String(start||'').trim();
+    const m=cleanStart.match(/^(\d{1,2}):(\d{2})$/);
+    if(!date || !m) return null;
+    const s=new Date(`${date}T${pad(m[1])}:${m[2]}:00+09:00`);
+    if(isNaN(s)) return null;
+    const cleanEnd=String(end||'').trim();
+    const em=cleanEnd.match(/^(\d{1,2}):(\d{2})$/);
+    const e=em ? new Date(`${date}T${pad(em[1])}:${em[2]}:00+09:00`) : new Date(s.getTime()+durMin*60000);
+    if(isNaN(e) || e<=s) return null;
+    return {start:s,end:e,startISO:s.toISOString(),endISO:e.toISOString()};
+  }
+
+  function compactName(v){ return String(v||'').replace(/\s+/g,'').trim(); }
+  function findMember(name){
+    const exact=members.filter(m=>(m.name||'').trim()===name);
+    if(exact.length===1) return {member:exact[0]};
+    if(exact.length>1) return {status:'ambiguous_member',message:'같은 이름의 회원이 2명 이상입니다.'};
+    const compact=members.filter(m=>compactName(m.name)===compactName(name));
+    if(compact.length===1) return {member:compact[0]};
+    if(compact.length>1) return {status:'ambiguous_member',message:'비슷한 이름의 회원이 2명 이상입니다.'};
+    return {status:'missing_member',message:'CRM 회원 목록에서 찾지 못했습니다.'};
+  }
+
+  function lessonCategory(name){
+    return /대표/.test(name) ? '대표PT' : /1:1/.test(name) ? '1:1PT' : 'PT';
+  }
+
+  async function buildItems(){
+    setErr('');
+    setResult(null);
+    let payload;
+    try{ payload=readPayload(); }
+    catch(e){ setErr(e.message); return []; }
+
+    const rows=payloadRows(payload);
+    if(!rows.length){ setErr('등록할 rows가 없습니다.'); return []; }
+
+    const defaultTrainer=payload.trainer || trainer || '서민기';
+    const defaultLesson=payload.lessonType || payload.lessonName || lessonName || '대표 PT';
+    const defaultDuration=parseInt(payload.brojDurationMinutes || payload.durationMinutes || duration)||60;
+    if(defaultTrainer!==trainer) setTrainer(defaultTrainer);
+    if(defaultLesson!==lessonName) setLessonName(defaultLesson);
+    if(String(defaultDuration)!==String(duration)) setDuration(String(defaultDuration));
+
+    const prepared=rows.map((row,idx)=>{
+      const memberName=String(row.member || row.name || row.customer || '').trim();
+      const date=String(row.date || row.dateISO || '').trim();
+      const start=String(row.start || row.time || row.startTime || '').trim();
+      const rowLesson=String(row.lessonType || row.lessonName || row.lesson_name || defaultLesson).trim();
+      const rowTrainer=String(row.trainer || defaultTrainer).trim();
+      const rowDuration=parseInt(row.brojDurationMinutes || row.durationMinutes || defaultDuration)||60;
+      const time=buildTime(date,start,row.end || row.endTime,rowDuration);
+      if(!memberName || !time) return {idx,row,status:'invalid',memberName,date,start,message:'회원명/날짜/시간 형식을 확인해주세요.'};
+      const match=findMember(memberName);
+      if(!match.member) return {idx,row,status:match.status,memberName,date,start,message:match.message};
+      return {
+        idx,row,status:'pending',member:match.member,memberName,date,start,
+        startISO:time.startISO,endISO:time.endISO,startDate:time.start,endDate:time.end,
+        lessonName:rowLesson || defaultLesson,
+        trainer:rowTrainer || defaultTrainer,
+        duration:rowDuration,
+        message:'검사 중'
+      };
+    });
+
+    const valid=prepared.filter(x=>x.status==='pending');
+    const memberIds=[...new Set(valid.map(x=>x.member.id))];
+    const msByMember={};
+    if(memberIds.length){
+      const {data,error}=await sb.from('memberships').select('id,member_id,product_name,remaining_count,total_count,end_date').in('member_id',memberIds).eq('status','활성').gt('remaining_count',0).order('end_date',{nullsFirst:false});
+      if(error){ setErr('회원권 조회 실패: '+error.message); return []; }
+      (data||[]).forEach(ms=>{ (msByMember[ms.member_id]=msByMember[ms.member_id]||[]).push(ms); });
+    }
+
+    let existing=[];
+    if(valid.length){
+      const min=new Date(Math.min(...valid.map(x=>x.startDate.getTime()))-4*60*60000);
+      const max=new Date(Math.max(...valid.map(x=>x.endDate.getTime()))+60000);
+      const {data,error}=await sb.from('lessons').select('id,member_id,start_at,end_at,lesson_name,trainer,status').gte('start_at',min.toISOString()).lte('start_at',max.toISOString());
+      if(error){ setErr('기존 예약 조회 실패: '+error.message); return []; }
+      existing=data||[];
+    }
+
+    const remainingByMs={};
+    function takeMembership(memberId){
+      const list=msByMember[memberId]||[];
+      for(const ms of list){
+        const left=remainingByMs[ms.id] ?? ms.remaining_count;
+        if(left>0){
+          remainingByMs[ms.id]=left-1;
+          return ms;
+        }
+      }
+      return null;
+    }
+
+    const checked=prepared.map(item=>{
+      if(item.status!=='pending') return item;
+      const dup=existing.find(l=>String(l.member_id)===String(item.member.id) && Math.abs(new Date(l.start_at).getTime()-item.startDate.getTime())<60000 && l.status!=='취소');
+      if(dup) return {...item,status:'duplicate',membership:null,message:'이미 같은 회원/시작시간 예약이 있습니다.'};
+      const conflict=existing.find(l=>l.trainer===item.trainer && l.status==='예약' && new Date(l.start_at)<item.endDate && new Date(l.end_at||l.start_at)>item.startDate);
+      if(conflict && skipConflicts) return {...item,status:'conflict',membership:null,message:`${item.trainer} ${hm(conflict.start_at)} 기존 예약과 겹칩니다.`};
+      const membership=takeMembership(item.member.id);
+      if(!membership && !allowNoMembership) return {...item,status:'no_membership',membership:null,message:'차감 가능한 활성 회원권이 없습니다.'};
+      return {...item,status:'ready',membership,message:membership?`${membership.product_name} 차감 예정`:'회원권 없이 예약만 등록'};
+    });
+    setItems(checked);
+    return checked;
+  }
+
+  async function registerReady(){
+    const checked=items.length?items:await buildItems();
+    const ready=checked.filter(x=>x.status==='ready');
+    if(!ready.length){ setErr('등록 가능한 일정이 없습니다. 먼저 검사 결과를 확인해주세요.'); return; }
+    setBusy(true); setErr('');
+    const next=checked.slice();
+    const summary={registered:0,error:0};
+    for(const item of ready){
+      const payload={
+        member_id:item.member.id,
+        membership_id:item.membership?item.membership.id:null,
+        start_at:item.startISO,
+        end_at:item.endISO,
+        lesson_name:item.lessonName,
+        category:lessonCategory(item.lessonName),
+        trainer:item.trainer||null,
+        status:'예약'
+      };
+      const {error}=await sb.from('lessons').insert(payload);
+      const pos=next.findIndex(x=>x.idx===item.idx);
+      if(error){
+        summary.error++;
+        if(pos>=0) next[pos]={...next[pos],status:'error',message:error.message};
+        continue;
+      }
+      if(item.membership){
+        const rpc=await sb.rpc('consume_specific',{p_membership_id:item.membership.id});
+        if(rpc.error && pos>=0) next[pos]={...next[pos],status:'error',message:'예약은 저장됐지만 회차 차감 실패: '+rpc.error.message};
+        else if(pos>=0) next[pos]={...next[pos],status:'registered',message:'등록 완료'};
+      }else if(pos>=0) next[pos]={...next[pos],status:'registered',message:'등록 완료'};
+      summary.registered++;
+      logAct(sb,'주간 스케줄 가져오기',`${item.memberName} · ${item.lessonName} · ${item.date} ${item.start}`);
+    }
+    setItems(next);
+    setResult(summary);
+    setBusy(false);
+    onSaved();
+  }
+
+  const readyCount=items.filter(x=>x.status==='ready').length;
+  const registeredCount=items.filter(x=>x.status==='registered').length;
+
+  return (
+    <div className="modal-ov" onClick={onClose}><div className="modal" style={{maxWidth:860}} onClick={e=>e.stopPropagation()}>
+      <div className="mhead"><h3>주간 스케줄 가져오기</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+      <p className="muted" style={{fontSize:13,marginTop:0}}>주간 스케줄 관리도구의 자동등록 JSON을 붙여넣으면 CRM 캘린더 예약으로 일괄 등록합니다.</p>
+      <div className="field"><label>스케줄 JSON</label>
+        <textarea value={text} onChange={e=>{setText(e.target.value);setItems([]);setResult(null);}}
+          placeholder="브로제이 자동등록 요청 또는 rows JSON을 그대로 붙여넣기"
+          style={{width:'100%',minHeight:150,background:'var(--forest)',border:'1px solid var(--line)',borderRadius:8,padding:'10px 12px',color:'var(--cream)',fontSize:12,fontFamily:'ui-monospace,SFMono-Regular,Menlo,monospace'}}/>
+      </div>
+      <div className="row2">
+        <div className="field" style={{flex:1}}><label>기본 수업명</label><input value={lessonName} onChange={e=>setLessonName(e.target.value)} placeholder="대표 PT"/></div>
+        <div className="field" style={{flex:1}}><label>기본 강사</label>
+          <input list="trainers" value={trainer} onChange={e=>setTrainer(e.target.value)} placeholder="서민기"/>
+          <datalist id="trainers">{trainers.map(t=><option key={t} value={t}/>)}</datalist></div>
+        <div className="field" style={{width:110}}><label>기본 길이</label><input type="number" value={duration} onChange={e=>setDuration(e.target.value)} placeholder="60"/></div>
+      </div>
+      <div style={{display:'flex',gap:14,flexWrap:'wrap',margin:'2px 0 14px'}}>
+        <label style={{fontSize:13,color:'var(--muted)'}}><input type="checkbox" checked={skipConflicts} onChange={e=>{setSkipConflicts(e.target.checked);setItems([]);}}/> 강사 시간 겹침은 건너뛰기</label>
+        <label style={{fontSize:13,color:'var(--muted)'}}><input type="checkbox" checked={allowNoMembership} onChange={e=>{setAllowNoMembership(e.target.checked);setItems([]);}}/> 활성 회원권 없어도 예약 등록</label>
+      </div>
+      <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
+        <button className="btn ghost sm" disabled={busy} onClick={buildItems}>검사</button>
+        <button className="btn" disabled={busy||readyCount===0} onClick={registerReady}>{busy?'등록 중...':`등록 가능 ${readyCount}건 저장`}</button>
+        {items.length>0 && <span className="muted" style={{fontSize:13}}>전체 {items.length}건 · 등록완료 {registeredCount}건</span>}
+      </div>
+      {err && <div className="err">{err}</div>}
+      {result && <div className="autobar" style={{marginTop:12}}>등록 완료 {result.registered}건{result.error?` · 오류 ${result.error}건`:''}</div>}
+      {items.length>0 && <div className="list" style={{marginTop:14,maxHeight:330,overflow:'auto'}}>
+        <table className="ptable">
+          <thead><tr><th>상태</th><th>회원</th><th>일시</th><th>수업</th><th>회원권/메시지</th></tr></thead>
+          <tbody>{items.map(item=>(
+            <tr key={item.idx}>
+              <td>{statusBadge(item.status)}</td>
+              <td>{item.memberName||'-'}</td>
+              <td>{item.date||'-'} {item.start||''}</td>
+              <td>{item.lessonName||lessonName} · {item.trainer||trainer}</td>
+              <td className="muted">{item.message}</td>
+            </tr>
+          ))}</tbody>
+        </table>
+      </div>}
+    </div></div>
+  );
+}
+
 // ---------- 그날 전체보기 ----------
 function DayModal({date,items,memberName,chipStyle,onClose,onCtx}){
   useEsc(onClose);
@@ -933,6 +1181,7 @@ function CalendarView({sb}){
   const [ctx,setCtx]=useState(null);
   const [booking,setBooking]=useState(null);
   const [noshow,setNoshow]=useState(null);
+  const [importer,setImporter]=useState(false);
   const [autoMsg,setAutoMsg]=useState('');
   const [picker,setPicker]=useState(false);
   const [dayView,setDayView]=useState(null);
@@ -1024,6 +1273,7 @@ function CalendarView({sb}){
         : <span className="mtitle-btn" style={{cursor:'default'}}>{anchor.getFullYear()}년 {anchor.getMonth()+1}/{anchor.getDate()} ({['일','월','화','수','목','금','토'][anchor.getDay()]}) · 강사별</span>}
       <button className="btn ghost sm" onClick={goNext}>›</button>
       <button className="btn ghost sm" onClick={goToday}>오늘</button>
+      <button className="btn ghost sm" onClick={e=>{e.stopPropagation();setImporter(true);}}>주간스케줄 가져오기</button>
       <div className="muted" style={{marginLeft:'auto',fontSize:13}}>날짜 클릭=예약 · 수업 우클릭=완료/휴강/노쇼</div>
       {picker && mode==='month' && <MonthPicker cur={cur} onPick={(y,m)=>{ setCur(new Date(y,m-1,1)); setPicker(false); }}/>}
     </div>
@@ -1108,6 +1358,8 @@ function CalendarView({sb}){
 
     {booking && <BookingModal sb={sb} date={booking.date} members={members} trainers={trainers}
         onClose={()=>setBooking(null)} onSaved={()=>{setBooking(null);loadLessons();}}/>}
+    {importer && <ScheduleImportModal sb={sb} members={members} trainers={trainers}
+        onClose={()=>setImporter(false)} onSaved={()=>loadLessons()}/>}
     {noshow && <NoshowModal lesson={noshow} onClose={()=>setNoshow(null)} onConfirm={r=>setStatus(noshow,'노쇼',r)}/>}
     {dayView && <DayModal date={dayView.date} items={byDate[dayView.date]||[]} memberName={memberName} chipStyle={chipStyle}
         onClose={()=>setDayView(null)} onCtx={c=>setCtx(c)}/>}
