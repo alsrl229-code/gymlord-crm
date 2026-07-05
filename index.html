@@ -32,6 +32,8 @@
   .tab.on{background:var(--brass);color:#1b1205;border-color:var(--brass);font-weight:700}
   .search{flex:1;min-width:180px;background:var(--forest2);border:1px solid var(--line);border-radius:10px;
     padding:10px 14px;color:var(--cream);font-size:15px}
+  .searchbox{flex:1;min-width:240px;display:flex;align-items:center;gap:6px}
+  .searchbox .search{min-width:0}
   .list{background:var(--forest2);border:1px solid var(--line);border-radius:12px;overflow:hidden}
   .row{display:grid;grid-template-columns:34px 44px 66px 1.1fr 54px 60px 1.2fr;gap:8px;padding:12px 16px;
     border-bottom:1px solid var(--line);align-items:center;cursor:pointer}
@@ -256,6 +258,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=40"></script>
+<script src="app.bundle.js?v=42"></script>
 </body>
 </html>

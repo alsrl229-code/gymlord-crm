@@ -41,6 +41,31 @@ async function logAct(sb,action,detail){
   }catch(e){}
 }
 
+async function loadActiveTrainerNames(sb){
+  const [ms,ls,tc]=await Promise.all([
+    sb.from('memberships').select('trainer').eq('status','활성').not('trainer','is',null).limit(5000),
+    sb.from('lessons').select('trainer').not('trainer','is',null).limit(5000),
+    sb.from('trainer_colors').select('name').limit(5000)
+  ]);
+  const names=new Set();
+  (ms.data||[]).forEach(r=>{ if(String(r.trainer||'').trim()) names.add(String(r.trainer).trim()); });
+  (ls.data||[]).forEach(r=>{ if(String(r.trainer||'').trim()) names.add(String(r.trainer).trim()); });
+  (tc.data||[]).forEach(r=>{ if(String(r.name||'').trim()) names.add(String(r.name).trim()); });
+  return [...names].sort((a,b)=>a.localeCompare(b,'ko'));
+}
+
+function TrainerSelect({value,onChange,trainers,label='담당 강사'}){
+  return (
+    <div className="field"><label>{label}</label>
+      <select value={value||''} onChange={e=>onChange(e.target.value)}>
+        <option value="">담당 없음</option>
+        {trainers.map(t=><option key={t} value={t}>{t}</option>)}
+      </select>
+      {trainers.length===0 && <div className="muted" style={{fontSize:12,marginTop:5}}>캘린더나 활성 회원권에 등록된 강사명이 아직 없습니다.</div>}
+    </div>
+  );
+}
+
 // ---------- 설정 ----------
 function Setup({onDone}){
   const [url,setUrl]=useState(localStorage.getItem(LS.url)||'');
@@ -92,6 +117,7 @@ function Login({sb,onIn}){
 function RegisterModal({sb,member,onClose,onSaved}){
   useEsc(onClose);
   const [products,setProducts]=useState([]);
+  const [trainers,setTrainers]=useState([]);
   const [payMethod,setPayMethod]=useState('카드');
   const t=new Date(); const plus=m=>{const d=new Date(t);d.setMonth(d.getMonth()+m);return d;};
   const [name,setName]=useState(''),[cat,setCat]=useState('PT'),[cnt,setCnt]=useState('10'),[price,setPrice]=useState('');
@@ -100,6 +126,7 @@ function RegisterModal({sb,member,onClose,onSaved}){
   const [err,setErr]=useState(''),[busy,setBusy]=useState(false);
   const [selProd,setSelProd]=useState(null);
   useEffect(()=>{ sb.from('products').select('*').eq('active',true).order('sort').then(({data})=>setProducts(data||[])); },[]);
+  useEffect(()=>{ loadActiveTrainerNames(sb).then(setTrainers); },[]);
   // 결제수단별 가격: 카드→카드가, 그 외(현금/계좌이체/기타)→현금가. 없으면 기본가로 폴백
   const prodPrice=(p,m)=> (m==='카드'? (p.price_card||p.price||p.price_cash) : (p.price_cash||p.price||p.price_card))||0;
   function pick(p){ setSelProd(p); setName(p.name); setCat(p.category||'PT'); setCnt(String(p.count||0));
@@ -148,7 +175,7 @@ function RegisterModal({sb,member,onClose,onSaved}){
         <div className="field" style={{flex:1}}><label>시작일</label><input type="date" value={sd} onChange={e=>setSd(e.target.value)}/></div>
         <div className="field" style={{flex:1}}><label>만료일</label><input type="date" value={ed} onChange={e=>setEd(e.target.value)}/></div>
       </div>
-      <div className="field"><label>담당 강사</label><input value={trainer} onChange={e=>setTrainer(e.target.value)} placeholder="강사명"/></div>
+      <TrainerSelect value={trainer} onChange={setTrainer} trainers={trainers}/>
       <button className="btn" disabled={busy} onClick={save}>{busy?'저장 중...':'등록 저장'}</button>
       <div className="err">{err}</div>
     </div></div>
@@ -164,11 +191,13 @@ function EditMembershipModal({sb,ms,memberName,onClose,onSaved}){
   const [remain,setRemain]=useState(String(ms.remaining_count||0));
   const [ed,setEd]=useState(ms.end_date||'');
   const [trainer,setTrainer]=useState(ms.trainer||'');
+  const [trainers,setTrainers]=useState([]);
   const [price,setPrice]=useState(ms.price?ms.price.toLocaleString():'');
   const [status,setStatus]=useState(ms.status||'활성');
   const [unpaid,setUnpaid]=useState(ms.unpaid?ms.unpaid.toLocaleString():'');
   const [busy,setBusy]=useState(false),[err,setErr]=useState('');
   const [xfer,setXfer]=useState(false),[members,setMembers]=useState([]),[xq,setXq]=useState('');
+  useEffect(()=>{ loadActiveTrainerNames(sb).then(list=>setTrainers(ms.trainer && !list.includes(ms.trainer) ? [ms.trainer,...list] : list)); },[]);
   function addMonths(n){ const base=ed?new Date(ed):new Date(); base.setMonth(base.getMonth()+n); setEd(ymd(base)); }
   async function save(){
     setBusy(true);
@@ -240,7 +269,7 @@ function EditMembershipModal({sb,ms,memberName,onClose,onSaved}){
       </div>
       <div className="row2">
         <div className="field" style={{flex:1}}><label>가격(원)</label><input value={price} onChange={e=>setPrice(fmtNum(e.target.value))}/></div>
-        <div className="field" style={{flex:1}}><label>담당 강사</label><input value={trainer} onChange={e=>setTrainer(e.target.value)}/></div>
+        <div style={{flex:1}}><TrainerSelect value={trainer} onChange={setTrainer} trainers={trainers}/></div>
       </div>
       <div className="field"><label>미수금(원) <span className="muted" style={{fontWeight:400}}>· 수납은 회원 상세의 '미수금 수납' 버튼 사용</span></label><input value={unpaid} onChange={e=>setUnpaid(fmtNum(e.target.value))} placeholder="0"/></div>
 
@@ -636,7 +665,8 @@ function LessonHistoryModal({member,lessons,memberships,initialTab,onClose}){
 // ---------- 회원 목록 ----------
 function MembersView({sb}){
   const [rows,setRows]=useState(null);
-  const [q,setQ]=useState(''),[tab,setTab]=useState('전체');
+  const [q,setQ]=useState(''),[query,setQuery]=useState(''),[tab,setTab]=useState('전체');
+  function doSearch(v){ setQuery((v??q).trim()); }
   const [sel,setSel]=useState(null);
   const [adding,setAdding]=useState(false);
   const [sort,setSort]=useState('name');
@@ -662,7 +692,7 @@ function MembersView({sb}){
     if(tab==='임박'){ if(!isSoon(r)) return false; }
     else if(tab==='홀딩'){ if(!isHold(r)) return false; }
     else if(tab!=='전체' && r.status!==tab) return false;
-    if(q){ const s=q.replace(/\s/g,''); return (r.name||'').includes(q)||(r.phone||'').replace(/\D/g,'').includes(s.replace(/\D/g,'')); }
+    if(query){ const nq=query.trim(); const d=query.replace(/\D/g,''); return (r.name||'').includes(nq)||(d&&(r.phone||'').replace(/\D/g,'').includes(d)); }
     return true;
   });
   const sorted=[...filtered].sort((a,b)=>{
@@ -701,7 +731,14 @@ function MembersView({sb}){
           <button key={t} className={'tab'+(tab===t?' on':'')} onClick={()=>setTab(t)}>{t} {counts[t]!==undefined?counts[t]:''}</button>
         ))}
       </div>
-      <input className="search" placeholder="이름 또는 전화번호 검색" value={q} onChange={e=>setQ(e.target.value)}/>
+      <div className="searchbox">
+        <input className="search" placeholder="이름 또는 전화번호 검색" value={q}
+          onChange={e=>{ const v=e.target.value; setQ(v); if(v==='') setQuery(''); }}
+          onKeyDown={e=>{ if(e.key==='Enter') doSearch(); }}/>
+        {q && <button className="btn ghost sm" title="지우기" onClick={()=>{ setQ(''); setQuery(''); }}>✕</button>}
+        <button className="btn sm" onClick={()=>doSearch()}>🔍 검색</button>
+      </div>
+      {query && <span className="muted" style={{fontSize:13}}>'{query}' 검색 {filtered.length}명</span>}
       <select value={sort} onChange={e=>setSort(e.target.value)} style={{background:'var(--forest2)',border:'1px solid var(--line)',borderRadius:10,padding:'9px 12px',color:'var(--cream)',fontSize:14,cursor:'pointer'}}>
         <option value="name">이름순</option><option value="new">최근 등록순</option><option value="old">오래된 등록순</option>
       </select>
