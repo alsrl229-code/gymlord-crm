@@ -4,6 +4,13 @@
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>GYMLORD 회원관리</title>
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="apple-touch-icon.png">
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#0E1714">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="GYMLORD">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cormorant+Garamond:wght@500;600;700&display=swap" rel="stylesheet">
@@ -72,7 +79,9 @@
   .shell{display:flex;min-height:100vh}
   .side{width:210px;flex:0 0 210px;background:var(--forest2);border-right:1px solid var(--brassline);
     position:sticky;top:0;height:100vh;display:flex;flex-direction:column;padding:20px 12px 16px;z-index:12}
-  .side .logo{padding:2px 10px 20px}
+  .side .logo{padding:2px 10px 8px;text-align:center}
+  .side-orn{margin:0 auto 16px;opacity:.85}
+  @media(max-width:860px){ .side-orn{display:none} }
   .side-nav{display:flex;flex-direction:column;gap:3px}
   .nav-it{display:flex;align-items:center;gap:11px;width:100%;text-align:left;background:none;border:none;
     color:var(--muted);padding:11px 13px;border-radius:10px;font-size:15px;font-weight:700;cursor:pointer}
@@ -138,6 +147,15 @@
   .mp-grid{display:grid;grid-template-columns:1fr;gap:18px;min-width:0}
   .mp-cardbox{background:var(--forest2);border:1px solid var(--brassline);border-radius:14px;padding:20px;min-width:0;
     box-shadow:0 12px 28px -20px rgba(0,0,0,.7)}
+  .mp-cardbox h3{margin:0 0 14px;padding-bottom:10px;border-bottom:1px solid var(--brassline);
+    font-size:13px;letter-spacing:1.2px;color:var(--brass);text-transform:uppercase;
+    display:flex;align-items:center;justify-content:space-between;font-weight:700}
+  .mp-cardbox h3 .muted{color:var(--muted);letter-spacing:0;text-transform:none;font-weight:600}
+  .ptable{width:100%;border-collapse:collapse;font-size:14px}
+  .ptable th{color:var(--muted);font-weight:600;font-size:12px;letter-spacing:.5px;text-transform:uppercase;padding:8px 6px;border-bottom:1px solid var(--brassline);text-align:left}
+  .ptable td{padding:10px 6px;border-bottom:1px solid var(--line)}
+  .ptable tbody tr:last-child td{border-bottom:none}
+  .ptable tbody tr:hover{background:rgba(176,141,87,.04)}
   .mp-cardbox>h3{font-size:13px;letter-spacing:1px;color:var(--brass);margin:0 0 14px;text-transform:uppercase;
     display:flex;justify-content:space-between;align-items:center;gap:10px}
   .ms-row{background:var(--forest);border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:8px;cursor:pointer}
@@ -150,8 +168,15 @@
   .ptable tr:last-child td{border-bottom:none}
   @media(max-width:860px){ .mp-body{grid-template-columns:1fr} .mp-left{position:static} }
   .center{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
-  .panel{width:100%;max-width:380px;background:var(--forest2);border:1px solid var(--brassline);border-radius:16px;padding:28px;
-    box-shadow:0 24px 60px -28px rgba(0,0,0,.8)}
+  .gl-scene{position:relative;overflow:hidden}
+  .gl-scene>svg:first-child{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none;z-index:0}
+  .gl-scene .panel{position:relative;z-index:1}
+  .panel{width:100%;max-width:380px;background:var(--forest2);border:1px solid var(--brassline);border-radius:16px;padding:32px 28px 26px;
+    box-shadow:0 24px 60px -28px rgba(0,0,0,.8), inset 0 1px 0 rgba(176,141,87,.12)}
+  .gl-panel{background:linear-gradient(180deg, rgba(21,36,32,.98), rgba(14,23,20,.98))}
+  .gl-crest{display:flex;justify-content:center;margin-bottom:8px}
+  .gl-logo-center{text-align:center;padding:0 !important;margin-bottom:14px}
+  .gl-logo-center small{margin-top:2px}
   .panel label{display:block;font-size:13px;color:var(--muted);margin:12px 0 5px}
   .panel input{width:100%;background:var(--forest);border:1px solid var(--line);border-radius:9px;padding:11px 13px;color:var(--cream);font-size:15px}
   .panel .btn{width:100%;margin-top:18px;padding:12px}
@@ -278,6 +303,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=44"></script>
+<script src="app.bundle.js?v=45"></script>
 </body>
 </html>

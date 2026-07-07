@@ -66,6 +66,34 @@ function TrainerSelect({value,onChange,trainers,label='담당 강사'}){
   );
 }
 
+// GL 모노그램 (프리미엄 화면·아이콘용) — 이중 원 프레임 + GL 리가처
+function GLMonogram({size=120, stroke=1.4, opacity=1, color='var(--brass)'}){
+  const s={width:size, height:size, display:'block', opacity};
+  return (<svg viewBox="0 0 120 120" style={s}>
+    <g fill="none" stroke={color} strokeWidth={stroke} strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="60" cy="60" r="54"/>
+      <circle cx="60" cy="60" r="49" opacity=".55"/>
+      {/* G — 오픈 커브 + 인디케이터 */}
+      <path d="M55 41c-9 0-15 8-15 19s6 19 15 19c8 0 14-6 14-14v-4H56"/>
+      {/* L — 세리프 라인 */}
+      <path d="M67 41v38h14"/>
+      <path d="M63 41h8M77 79h8" opacity=".5"/>
+    </g>
+  </svg>);
+}
+// 이중 브라스 오너먼트 라인 (섹션 디바이더)
+function Ornament({width=120}){
+  return (<svg viewBox="0 0 120 8" style={{width,height:8,display:'block',margin:'0 auto'}}>
+    <g stroke="var(--brass)" strokeWidth="1" fill="none">
+      <line x1="4" y1="3" x2="52" y2="3"/>
+      <line x1="4" y1="5" x2="52" y2="5" opacity=".5"/>
+      <line x1="68" y1="3" x2="116" y2="3"/>
+      <line x1="68" y1="5" x2="116" y2="5" opacity=".5"/>
+      <circle cx="60" cy="4" r="1.6" fill="var(--brass)" stroke="none"/>
+    </g>
+  </svg>);
+}
+
 // ---------- 설정 ----------
 function Setup({onDone}){
   const [url,setUrl]=useState(localStorage.getItem(LS.url)||'');
@@ -78,8 +106,10 @@ function Setup({onDone}){
     localStorage.setItem(LS.url,u); localStorage.setItem(LS.key,k); onDone();
   }
   return (
-    <div className="center"><div className="panel">
-      <div className="logo">GYMLORD<small>MEMBER OS · 연결설정</small></div>
+    <div className="center gl-scene"><GLMonogram size={520} opacity={.05} color="#B08D57" /><div className="panel gl-panel">
+      <div className="gl-crest"><GLMonogram size={54} stroke={1.2} opacity={.9}/></div>
+      <div className="logo gl-logo-center">GYMLORD<small>MEMBER OS · 연결설정</small></div>
+      <Ornament/>
       <label>① Project URL <span className="muted">(주소)</span></label>
       <input value={url} onChange={e=>setUrl(e.target.value)} placeholder="https://xxxx.supabase.co"/>
       <label>② API Key <span className="muted">(anon 또는 sb_publishable_...)</span></label>
@@ -100,8 +130,10 @@ function Login({sb,onIn}){
     if(error) setErr('로그인 실패: '+error.message); else onIn();
   }
   return (
-    <div className="center"><div className="panel">
-      <div className="logo">GYMLORD<small>MEMBER OS · 직원 로그인</small></div>
+    <div className="center gl-scene"><GLMonogram size={520} opacity={.05} color="#B08D57" /><div className="panel gl-panel">
+      <div className="gl-crest"><GLMonogram size={54} stroke={1.2} opacity={.9}/></div>
+      <div className="logo gl-logo-center">GYMLORD<small>MEMBER OS · 직원 로그인</small></div>
+      <Ornament/>
       <label>이메일</label>
       <input value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==='Enter'&&go()} />
       <label>비밀번호</label>
@@ -2115,6 +2147,7 @@ function App(){
     <div className="shell">
       <aside className="side">
         <div className="logo">GYMLORD<small>MEMBER OS</small></div>
+        <div className="side-orn"><Ornament width={96}/></div>
         <nav className="side-nav">
           {menu.map(([k,lbl])=>(
             <button key={k} className={'nav-it'+(view===k?' on':'')} onClick={()=>setView(k)}>
