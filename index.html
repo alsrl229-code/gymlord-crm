@@ -23,6 +23,22 @@
     --serif:"Cormorant Garamond",Georgia,serif;
   }
   *{box-sizing:border-box}
+  /* 마이크로 인터랙션 — 150ms 이지아웃 통일 */
+  .btn,.tab,.nav-it,.tl-chip,.dash-row,.mp-cardbox,.stat,.card,.locker,.chip,.row,.mlist-table .row,input,select,textarea,.link,.searchbox button{
+    transition:background-color .15s ease, border-color .15s ease, color .15s ease, box-shadow .15s ease, transform .15s ease, filter .15s ease, opacity .15s ease;
+  }
+  .mp-cardbox:hover,.stat:hover{border-color:rgba(176,141,87,.42);transform:translateY(-1px);
+    box-shadow:0 18px 34px -20px rgba(0,0,0,.75), 0 0 0 1px rgba(176,141,87,.06)}
+  .locker:hover:not(.empty){transform:translateY(-1px);box-shadow:0 8px 18px -12px rgba(0,0,0,.6)}
+  .dash-row:hover{background:rgba(176,141,87,.05);padding-left:6px;padding-right:6px;margin-left:-6px;margin-right:-6px;border-radius:8px}
+  input:focus,select:focus,textarea:focus{outline:none;border-color:var(--brass) !important;box-shadow:0 0 0 3px rgba(176,141,87,.15)}
+  @keyframes gl-fadeIn{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+  @keyframes gl-modalIn{from{opacity:0;transform:scale(.97) translateY(6px)}to{opacity:1;transform:none}}
+  @keyframes gl-overlayIn{from{opacity:0}to{opacity:1}}
+  .modal{animation:gl-modalIn .18s ease-out both}
+  .modal-ov{animation:gl-overlayIn .15s ease-out both}
+  .main>div{animation:gl-fadeIn .22s ease-out both}
+  @media(prefers-reduced-motion:reduce){ *,*::before,*::after{transition:none !important;animation:none !important} }
   body{margin:0;background-color:var(--forest);color:var(--cream);
     background-image:radial-gradient(1200px 800px at 28% -120px, rgba(176,141,87,.055), transparent 62%),
       radial-gradient(1000px 760px at 100% 105%, rgba(11,20,16,.95), transparent 58%);
@@ -92,19 +108,40 @@
   .side-spacer{flex:1}
   .main{flex:1;min-width:0;padding:0 26px 30px}
   .main>div{max-width:1240px;margin:0 auto}
+  .mob-logout{display:none}
   @media(max-width:860px){
     .shell{flex-direction:column}
-    .side{width:100%;flex:none;height:auto;position:sticky;top:0;flex-direction:row;align-items:center;
-      padding:10px 12px;border-right:none;border-bottom:1px solid var(--line);overflow-x:auto;gap:4px}
-    .side .logo{padding:0 12px 0 0;white-space:nowrap}
-    .side .logo small{display:none}
-    .side-nav{flex-direction:row;gap:2px}
-    .nav-it{width:auto;padding:8px 10px;white-space:nowrap;font-size:14px}
-    .side-spacer{display:none}
-    .side>.btn{width:auto !important;white-space:nowrap;margin-left:6px}
-    .main{padding:0 14px 30px}
-    .mpage{left:0}
+    /* 사이드바 → 하단 고정 탭바 */
+    .side{position:fixed;bottom:0;left:0;right:0;top:auto;width:100%;flex:none;height:auto;
+      flex-direction:row;padding:5px 4px calc(6px + env(safe-area-inset-bottom));
+      border-right:none;border-top:1px solid var(--brassline);
+      background:rgba(21,36,32,.95);backdrop-filter:blur(14px);
+      -webkit-backdrop-filter:blur(14px);z-index:15;align-items:stretch;gap:0}
+    .side .logo,.side-orn,.side-spacer{display:none}
+    .side>.btn{display:none} /* 데스크탑 로그아웃은 하단바에서 숨김, 우상단 원형 버튼으로 대체 */
+    .side-nav{flex:1;flex-direction:row;justify-content:space-between;gap:0;overflow:hidden}
+    .nav-it{flex:1 1 0;min-width:0;flex-direction:column;align-items:center;justify-content:center;
+      gap:2px;padding:6px 2px;font-size:10px;font-weight:600;text-align:center;border-radius:8px;
+      color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .nav-it.on{background:transparent;color:var(--brass);position:relative}
+    .nav-it.on::before{content:"";position:absolute;top:-5px;left:22%;right:22%;height:2px;background:var(--metal);border-radius:0 0 3px 3px}
+    .nav-ic{width:22px;height:22px}
+    .nav-ic svg{width:22px;height:22px}
+    /* 우상단 원형 로그아웃 (모바일 전용) */
+    .mob-logout{display:flex;position:fixed;top:12px;right:14px;z-index:16;
+      width:38px;height:38px;align-items:center;justify-content:center;
+      background:rgba(21,36,32,.92);backdrop-filter:blur(8px);
+      border:1px solid var(--brassline);border-radius:50%;
+      color:var(--muted);font-size:15px;cursor:pointer;font-family:inherit}
+    .mob-logout:hover{color:var(--brass);border-color:var(--brass)}
+    /* 메인 컨텐츠가 하단바에 안 가리게 */
+    .main{padding:0 14px calc(72px + env(safe-area-inset-bottom))}
+    .mpage{left:0;padding-bottom:calc(72px + env(safe-area-inset-bottom))}
+    .mp-body{padding:14px 14px calc(20px + env(safe-area-inset-bottom))}
     .row.logrow{grid-template-columns:110px 100px 1fr;} .row.logrow>div:last-child{display:none}
+    /* 모바일에서 카드 hover 상승 효과 끔 (터치 → 잔상) */
+    .mp-cardbox:hover,.stat:hover,.locker:hover{transform:none}
+    .dash-row:hover{background:transparent;padding-left:2px;padding-right:2px;margin:0}
   }
   .name{font-weight:700}
   .badge{display:inline-block;font-size:11px;padding:2px 9px;border-radius:20px;font-weight:700}
@@ -303,6 +340,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=45"></script>
+<script src="app.bundle.js?v=46"></script>
 </body>
 </html>

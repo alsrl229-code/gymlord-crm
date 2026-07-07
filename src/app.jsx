@@ -2157,6 +2157,12 @@ function App(){
         <div className="side-spacer"/>
         <button className="btn ghost sm" style={{width:'100%'}} onClick={logout}>로그아웃</button>
       </aside>
+      <button className="mob-logout" onClick={logout} title="로그아웃" aria-label="로그아웃">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
+          <path d="M9 21H5.5A2.5 2.5 0 0 1 3 18.5v-13A2.5 2.5 0 0 1 5.5 3H9"/>
+          <path d="M16 17l5-5-5-5M21 12H9"/>
+        </svg>
+      </button>
       <main className="main">
         {view==='home'? <DashboardView sb={sb}/> :
          view==='members'? <MembersView sb={sb}/> :
