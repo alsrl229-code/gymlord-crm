@@ -2082,6 +2082,17 @@ function LogsView({sb}){
 }
 
 // ---------- App ----------
+// 네비 라인 아이콘 (currentColor 상속 → 활성시 브라스)
+const _ni={viewBox:'0 0 24 24',width:19,height:19,fill:'none',stroke:'currentColor',strokeWidth:1.6,strokeLinecap:'round',strokeLinejoin:'round'};
+const NAV_ICONS={
+  home:(<svg {..._ni}><path d="M3 11.4 12 4l9 7.4"/><path d="M5.6 9.9V20h12.8V9.9"/><path d="M9.8 20v-5.6h4.4V20"/></svg>),
+  members:(<svg {..._ni}><circle cx="12" cy="7.8" r="3.6"/><path d="M4.6 20c.7-4.1 3.7-6.1 7.4-6.1s6.7 2 7.4 6.1"/></svg>),
+  calendar:(<svg {..._ni}><rect x="3.5" y="5" width="17" height="15.5" rx="2"/><path d="M3.5 9.7h17M8.4 3v4M15.6 3v4"/></svg>),
+  lockers:(<svg {..._ni}><circle cx="8.3" cy="12" r="3.7"/><path d="M12 12h8.5M16.8 12v3.3M20.5 12v2.4"/></svg>),
+  sales:(<svg {..._ni}><rect x="2.8" y="6.4" width="18.4" height="11.2" rx="1.8"/><circle cx="12" cy="12" r="2.6"/><path d="M6.1 12h.01M17.9 12h.01"/></svg>),
+  products:(<svg {..._ni}><path d="M11.9 3.5H5.7A2.2 2.2 0 0 0 3.5 5.7v6.2c0 .58.23 1.14.64 1.55l7.4 7.4a2.2 2.2 0 0 0 3.1 0l6.2-6.2a2.2 2.2 0 0 0 0-3.1l-7.4-7.4a2.2 2.2 0 0 0-1.54-.65Z"/><circle cx="8.2" cy="8.2" r="1.25"/></svg>),
+  logs:(<svg {..._ni}><rect x="4.6" y="4" width="14.8" height="17" rx="2"/><path d="M8.6 9.2h6.8M8.6 13h6.8M8.6 16.8h4.2"/></svg>),
+};
 function App(){
   const [sb]=useState(getClient);
   const [authed,setAuthed]=useState(null);
@@ -2092,22 +2103,22 @@ function App(){
   if(authed===null) return <div className="center"><div className="muted">불러오는 중...</div></div>;
   if(!authed) return <Login sb={sb} onIn={()=>setAuthed(true)}/>;
   const menu=[
-    ['home','🏠','홈'],
-    ['members','👤','회원'],
-    ['calendar','📅','캘린더'],
-    ['lockers','🔑','락커'],
-    ['sales','💰','매출'],
-    ['products','🏷️','상품'],
-    ['logs','📋','로그'],
+    ['home','홈'],
+    ['members','회원'],
+    ['calendar','캘린더'],
+    ['lockers','락커'],
+    ['sales','매출'],
+    ['products','상품'],
+    ['logs','로그'],
   ];
   return (
     <div className="shell">
       <aside className="side">
         <div className="logo">GYMLORD<small>MEMBER OS</small></div>
         <nav className="side-nav">
-          {menu.map(([k,ic,lbl])=>(
+          {menu.map(([k,lbl])=>(
             <button key={k} className={'nav-it'+(view===k?' on':'')} onClick={()=>setView(k)}>
-              <span className="nav-ic">{ic}</span>{lbl}
+              <span className="nav-ic">{NAV_ICONS[k]}</span>{lbl}
             </button>))}
         </nav>
         <div className="side-spacer"/>
