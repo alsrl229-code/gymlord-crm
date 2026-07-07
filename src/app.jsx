@@ -348,8 +348,9 @@ function Detail({sb,member:m0,onClose}){
   const [lessonTab,setLessonTab]=useState('upcoming');
   const [showHistory,setShowHistory]=useState(false),[lockerPick,setLockerPick]=useState(false),[collect,setCollect]=useState(false);
   const [refund,setRefund]=useState(null);
+  const [editPay,setEditPay]=useState(null);
   const [hist,setHist]=useState(null);
-  useEsc((reg||editMs||editMember||showHistory||lockerPick||collect||refund) ? (()=>{}) : onClose);
+  useEsc((reg||editMs||editMember||showHistory||lockerPick||collect||refund||editPay) ? (()=>{}) : onClose);
   async function reload(){
     const a=await sb.from('memberships').select('*').eq('member_id',member.id).order('end_date',{ascending:false});
     setMs(a.data||[]);
@@ -451,7 +452,9 @@ function Detail({sb,member:m0,onClose}){
                   <td>{fmtDate(p.paid_at)}</td>
                   <td style={p.amount<0?{color:'#d98b7a'}:undefined}>{p.method||'-'}</td>
                   <td style={{textAlign:'right',color:p.amount<0?'#d98b7a':undefined}}>{(p.amount||0).toLocaleString()}원</td>
-                  <td style={{textAlign:'right'}}>{p.amount>0? <button className="link" style={{margin:0,fontSize:12}} onClick={()=>setRefund(p)}>환불</button> : null}</td>
+                  <td style={{textAlign:'right',whiteSpace:'nowrap'}}>
+                    <button className="link" style={{margin:0,fontSize:12}} onClick={()=>setEditPay(p)}>수정</button>
+                    {p.amount>0? <button className="link" style={{margin:'0 0 0 8px',fontSize:12}} onClick={()=>setRefund(p)}>환불</button> : null}</td>
                 </tr>))}</tbody></table>}
           </div>
           <div className="mp-cardbox">
@@ -473,6 +476,7 @@ function Detail({sb,member:m0,onClose}){
     {lockerPick && <LockerPickModal sb={sb} member={member} onClose={()=>setLockerPick(false)} onSaved={()=>{setLockerPick(false);reload();}}/>}
     {collect && <CollectModal sb={sb} member={member} memberships={ms||[]} onClose={()=>setCollect(false)} onSaved={()=>{reload();}}/>}
     {refund && <RefundModal sb={sb} member={member} payment={refund} onClose={()=>setRefund(null)} onSaved={()=>{setRefund(null);reload();}}/>}
+    {editPay && <EditPaymentModal sb={sb} member={member} payment={editPay} onClose={()=>setEditPay(null)} onSaved={()=>{setEditPay(null);reload();}}/>}
   </>);
 }
 
@@ -499,6 +503,54 @@ function RefundModal({sb,member,payment,onClose,onSaved}){
     <p className="muted" style={{fontSize:12,margin:'0 0 10px'}}>환불은 매출에 음수로 기록되어 합계에서 차감됩니다. 회원권 잔여횟수·만료일은 바뀌지 않으니 필요하면 회원권 수정에서 조정하세요.</p>
     {err && <div className="err">{err}</div>}
     <button className="btn" style={{width:'100%'}} disabled={busy} onClick={save}>{busy?'처리 중...':'환불 처리'}</button>
+  </div></div>);
+}
+
+// ---------- 결제내역 수정 ----------
+function EditPaymentModal({sb,member,payment,onClose,onSaved}){
+  useEsc(onClose);
+  const sign = (payment.amount||0)<0? -1 : 1; // 환불(음수) 행은 부호 유지
+  const [amt,setAmt]=useState(Math.abs(payment.amount||0).toLocaleString());
+  const [date,setDate]=useState(payment.paid_at||'');
+  const METHODS=['등록','일부결제','미수금수납','환불','기타'];
+  const [method,setMethod]=useState(METHODS.includes(payment.method)?payment.method:(payment.method||'기타'));
+  const [payMethod,setPayMethod]=useState(payment.pay_method||'');
+  const [busy,setBusy]=useState(false),[err,setErr]=useState('');
+  async function save(){
+    const a=parseInt((amt||'').replace(/\D/g,''))||0;
+    if(a<=0) return setErr('금액을 입력하세요');
+    if(!date) return setErr('거래일을 입력하세요');
+    setBusy(true);
+    const {error}=await sb.from('payments').update({amount:sign*a,paid_at:date,method,pay_method:payMethod||null}).eq('id',payment.id);
+    setBusy(false); if(error) return setErr('저장 실패: '+error.message);
+    logAct(sb,'결제내역 수정',`${member.name} · ${fmtDate(date)} · ${method} · ${(sign*a).toLocaleString()}원 (원래 ${(payment.amount||0).toLocaleString()}원)`);
+    onSaved();
+  }
+  async function del(){
+    if(!confirm(`이 결제내역을 삭제할까요?\n${fmtDate(payment.paid_at)} · ${payment.method||'-'} · ${(payment.amount||0).toLocaleString()}원\n\n매출 집계에서도 빠집니다. 되돌릴 수 없습니다.`)) return;
+    const {error}=await sb.from('payments').delete().eq('id',payment.id);
+    if(error) return setErr('삭제 실패: '+error.message);
+    logAct(sb,'결제내역 삭제',`${member.name} · ${fmtDate(payment.paid_at)} · ${(payment.amount||0).toLocaleString()}원`);
+    onSaved();
+  }
+  return (<div className="modal-ov" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}>
+    <div className="mhead"><h3>결제내역 수정 · {member.name}</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+    {sign<0 && <p className="muted" style={{fontSize:12,marginTop:0}}>환불 거래입니다 — 금액은 자동으로 음수(-)로 저장됩니다.</p>}
+    <div className="row2">
+      <div className="field" style={{flex:1}}><label>거래일</label><input type="date" value={date} onChange={e=>setDate(e.target.value)}/></div>
+      <div className="field" style={{flex:1}}><label>금액(원)</label><input value={amt} onChange={e=>setAmt(fmtNum(e.target.value))}/></div>
+    </div>
+    <div className="row2">
+      <div className="field" style={{flex:1}}><label>구분</label>
+        <select value={method} onChange={e=>setMethod(e.target.value)}>{['등록','일부결제','미수금수납','환불','기타'].concat(['등록','일부결제','미수금수납','환불','기타'].includes(method)?[]:[method]).map(m=><option key={m}>{m}</option>)}</select></div>
+      <div className="field" style={{flex:1}}><label>결제수단</label>
+        <select value={payMethod} onChange={e=>setPayMethod(e.target.value)}><option value="">미지정</option><option>카드</option><option>현금</option><option>계좌이체</option><option>기타</option></select></div>
+    </div>
+    {err && <div className="err">{err}</div>}
+    <div style={{display:'flex',gap:8,marginTop:6}}>
+      <button className="btn" style={{flex:1}} disabled={busy} onClick={save}>{busy?'저장 중...':'저장'}</button>
+      <button className="btn ghost" style={{color:'#d98b7a',borderColor:'#5a2e28'}} onClick={del}>삭제</button>
+    </div>
   </div></div>);
 }
 
@@ -844,14 +896,33 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
     if(c) return confirm(`⚠️ ${trainer} 강사가 ${hm(c.start_at)}에 이미 예약이 있습니다 (${c.lesson_name}).\n그래도 예약을 진행할까요?`);
     return true;
   }
+  const [repeat,setRepeat]=useState('1'); // 매주 같은 요일/시간 반복 횟수
+  function nthDate(i){ const d=new Date(`${date}T00:00:00+09:00`); d.setDate(d.getDate()+7*i); return ymd(d); }
   async function saveMember(){
     if(!sel) return setErr('회원을 선택하세요');
-    setBusy(true); const [s,e]=times();
-    if(!await conflictOK(s,e)){ setBusy(false); return; }
-    const {error}=await sb.from('lessons').insert({member_id:sel.id, membership_id:msId, start_at:s, end_at:e, lesson_name:name, trainer:trainer||null, status:'예약'});
+    const n=Math.max(1,Math.min(20,parseInt(repeat)||1));
+    setErr('');
+    // 잔여횟수 검증: 반복 수가 잔여보다 많으면 차단
+    if(msId){ const m=mss.find(x=>x.id===msId);
+      if(m && n>(m.remaining_count||0)) return setErr(`잔여 ${m.remaining_count}회인데 ${n}회를 예약하려고 합니다. 반복 횟수를 줄여주세요.`); }
+    setBusy(true);
+    // 전체 기간 충돌 일괄 확인 (강사 지정 시)
+    if(trainer){
+      const d0=new Date(`${date}T00:00:00+09:00`).toISOString();
+      const dEnd=new Date(`${nthDate(n-1)}T23:59:59+09:00`).toISOString();
+      const {data:exist}=await sb.from('lessons').select('start_at,end_at,lesson_name').eq('trainer',trainer).eq('status','예약').gte('start_at',d0).lte('start_at',dEnd);
+      const clashes=[];
+      for(let i=0;i<n;i++){ const di=nthDate(i); const s=new Date(`${di}T${start}:00+09:00`).toISOString(); const e=new Date(new Date(s).getTime()+(parseInt(dur)||50)*60000).toISOString();
+        const c=(exist||[]).find(l=> l.start_at<e && (l.end_at||l.start_at)>s); if(c) clashes.push(`${di} ${hm(c.start_at)} (${c.lesson_name})`); }
+      if(clashes.length && !confirm(`⚠️ ${trainer} 강사 기존 예약과 겹칩니다:\n${clashes.join('\n')}\n\n그래도 전부 예약할까요?`)){ setBusy(false); return; }
+    }
+    // 일괄 삽입
+    const rows=[]; for(let i=0;i<n;i++){ const di=nthDate(i); const s=new Date(`${di}T${start}:00+09:00`).toISOString(); const e=new Date(new Date(s).getTime()+(parseInt(dur)||50)*60000).toISOString();
+      rows.push({member_id:sel.id, membership_id:msId, start_at:s, end_at:e, lesson_name:name, trainer:trainer||null, status:'예약'}); }
+    const {error}=await sb.from('lessons').insert(rows);
     if(error){ setBusy(false); return setErr('저장 실패: '+error.message); }
-    if(msId) await sb.rpc('consume_specific',{p_membership_id:msId}); // 예약 즉시 차감
-    logAct(sb,'수업 예약',`${sel.name} · ${name} · ${date} ${start}`);
+    if(msId) for(let i=0;i<n;i++) await sb.rpc('consume_specific',{p_membership_id:msId}); // 예약 즉시 차감 × n
+    logAct(sb,'수업 예약',`${sel.name} · ${name} · ${date} ${start}${n>1?` (매주 ×${n}회, ~${nthDate(n-1)})`:''}`);
     setBusy(false); onSaved();
   }
   async function saveGuest(){
@@ -891,10 +962,17 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
           <div className="field" style={{flex:1}}><label>시작 시간</label><input type="time" value={start} onChange={e=>setStart(e.target.value)}/></div>
           <div className="field" style={{width:100}}><label>길이(분)</label><input type="number" value={dur} onChange={e=>setDur(e.target.value)}/></div>
         </div>
-        <div className="field"><label>강사</label>
-          <input list="trainers" value={trainer} onChange={e=>setTrainer(e.target.value)} placeholder="강사명"/>
-          <datalist id="trainers">{trainers.map(t=><option key={t} value={t}/>)}</datalist></div>
-        <button className="btn" disabled={busy} onClick={saveMember}>{busy?'저장 중...':'예약 저장'}</button>
+        <div className="row2">
+          <div className="field" style={{flex:1}}><label>강사</label>
+            <input list="trainers" value={trainer} onChange={e=>setTrainer(e.target.value)} placeholder="강사명"/>
+            <datalist id="trainers">{trainers.map(t=><option key={t} value={t}/>)}</datalist></div>
+          <div className="field" style={{width:130}}><label>반복(매주)</label>
+            <select value={repeat} onChange={e=>setRepeat(e.target.value)}>
+              {Array.from({length:20},(_,i)=>i+1).map(n=><option key={n} value={n}>{n===1?'1회 (반복없음)':`매주 ×${n}회`}</option>)}
+            </select></div>
+        </div>
+        {parseInt(repeat)>1 && <p className="muted" style={{fontSize:12,margin:'-4px 0 10px'}}>{date}부터 매주 같은 요일 {start}에 {repeat}회 예약됩니다 (마지막 {nthDate(parseInt(repeat)-1)}){msId?' · 잔여횟수도 '+repeat+'회 차감':''}.</p>}
+        <button className="btn" disabled={busy} onClick={saveMember}>{busy?'저장 중...':parseInt(repeat)>1?`${repeat}회 일괄 예약`:'예약 저장'}</button>
       </>) : <>
         <div className="field"><label>수업 종류</label>
           <div className="seg">{['OT','상담','기타'].map(t=>(
@@ -1605,6 +1683,15 @@ function DashboardView({sb}){
   const dday=end=>{ if(!end)return null; const d=new Date(end); if(isNaN(d))return null; return Math.ceil((new Date(d.getFullYear(),d.getMonth(),d.getDate())-t0)/86400000); };
   const soon=(ms||[]).filter(m=>m.status==='활성').map(m=>({m,d:dday(m.end_date)})).filter(x=>x.d!==null&&x.d>=0&&x.d<=14).sort((a,b)=>a.d-b.d);
   const holding=(ms||[]).filter(m=>m.status==='홀딩');
+  // 잔여횟수 임박: 활성 회차권 중 잔여 3회 이하 (재등록 영업 대상)
+  const lowCount=(ms||[]).filter(m=>m.status==='활성'&&(m.total_count||0)>0&&(m.remaining_count||0)<=3).sort((a,b)=>(a.remaining_count||0)-(b.remaining_count||0));
+  // 최근 30일 내 만료됐고 현재 유효(활성/홀딩) 회원권이 없는 회원 = 재등록 권유 대상
+  const churn=(()=>{ const hasLive=new Set((ms||[]).filter(m=>m.status==='활성'||m.status==='홀딩').map(m=>m.member_id));
+    const lim=new Date(t0); lim.setDate(lim.getDate()-30); const best={};
+    (ms||[]).forEach(m=>{ if(m.status!=='만료'||!m.end_date||hasLive.has(m.member_id)) return;
+      const d=new Date(m.end_date); if(isNaN(d)||d<lim||d>t0) return;
+      if(!best[m.member_id]||m.end_date>best[m.member_id].end_date) best[m.member_id]=m; });
+    return Object.values(best).sort((a,b)=>(b.end_date||'').localeCompare(a.end_date||'')); })();
   const unpaid=(ms||[]).filter(m=>(m.unpaid||0)>0).sort((a,b)=>b.unpaid-a.unpaid);
   // 활성 회원 성별비 / 연령대 (브로제이 인사이트 대응)
   const actives=(members||[]).filter(m=>m.status==='활성');
@@ -1665,6 +1752,23 @@ function DashboardView({sb}){
           </div>))}
       </div>
       <div className="mp-cardbox">
+        <h3><span>🔻 잔여횟수 임박</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>3회 이하 · {lowCount.length}건</span></h3>
+        {lowCount.length===0? <div className="muted">잔여 3회 이하인 회원권이 없습니다</div> :
+          lowCount.slice(0,15).map(m=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.member_id)}>
+            <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name}{m.trainer?` · ${m.trainer}`:''}</span></div>
+            <span style={{color:(m.remaining_count||0)===0?'#d98b7a':'#e0a23c',fontWeight:700}}>잔여 {m.remaining_count||0}/{m.total_count}</span>
+          </div>))}
+        {lowCount.length>0 && <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>재등록 안내가 필요한 회원입니다.</p>}
+      </div>
+      <div className="mp-cardbox">
+        <h3><span>🚪 최근 만료 · 미재등록</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>30일 내 · {churn.length}명</span></h3>
+        {churn.length===0? <div className="muted">최근 30일 내 만료 후 미재등록 회원이 없습니다<br/><span style={{fontSize:12}}>(앞으로 회원권이 만료되면 여기에 표시됩니다)</span></div> :
+          churn.slice(0,15).map(m=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.member_id)}>
+            <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name}</span></div>
+            <span className="muted" style={{fontSize:13}}>{fmtDate(m.end_date)} 만료</span>
+          </div>))}
+      </div>
+      <div className="mp-cardbox">
         <h3><span>📊 활성 회원 분포</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{actives.length}명</span></h3>
         {actives.length===0? <div className="muted">활성 회원이 없습니다</div> : <>
           <div className="kv" style={{marginBottom:6}}><span>성별</span>
@@ -1698,8 +1802,11 @@ function SalesView({sb}){
   useEffect(()=>{
     sb.from('payments').select('*').order('paid_at',{ascending:false}).then(({data})=>setPays(data||[]));
     sb.from('members').select('id,name').then(({data})=>setMembers(data||[]));
-    sb.from('memberships').select('id,member_id,unpaid').then(({data})=>{ setMsAll(data||[]); setUnpaidSum((data||[]).reduce((s,m)=>s+(m.unpaid||0),0)); });
+    sb.from('memberships').select('id,member_id,unpaid,trainer').then(({data})=>{ setMsAll(data||[]); setUnpaidSum((data||[]).reduce((s,m)=>s+(m.unpaid||0),0)); });
   },[]);
+  const [monthLessons,setMonthLessons]=useState([]);
+  useEffect(()=>{ const s=new Date(ref.y,ref.m,1), e=new Date(ref.y,ref.m+1,1);
+    sb.from('lessons').select('trainer,status,member_id').gte('start_at',s.toISOString()).lt('start_at',e.toISOString()).then(({data})=>setMonthLessons(data||[])); },[ref]);
   const nameById=useMemo(()=>{const o={};members.forEach(x=>o[x.id]=x.name);return o;},[members]);
   // 회원별 회원권 회차(등록순): membership_id → N회차
   const rankByMs=useMemo(()=>{ const by={}; msAll.slice().sort((a,b)=>a.id-b.id).forEach(m=>{ (by[m.member_id]=by[m.member_id]||[]).push(m.id); }); const r={}; Object.values(by).forEach(list=>list.forEach((id,i)=>r[id]=i+1)); return r; },[msAll]);
@@ -1723,6 +1830,15 @@ function SalesView({sb}){
     downloadCSV(`매출_${ym}.csv`,rows);
   }
   function move(delta){ setRef(r=>{ let m=r.m+delta,y=r.y; if(m<0){m=11;y--;} if(m>11){m=0;y++;} return {y,m}; }); }
+  // 강사별 실적: 해당월 수업(상태별) + 수업회원수 + 매출기여(결제→회원권 trainer 기준)
+  const trainerByMs=useMemo(()=>{ const o={}; msAll.forEach(m=>o[m.id]=m.trainer||null); return o; },[msAll]);
+  const trainerStats=useMemo(()=>{ const st={};
+    const get=t=>st[t]=st[t]||{done:0,noshow:0,rest:0,booked:0,members:new Set(),revenue:0};
+    monthLessons.forEach(l=>{ const s=get(l.trainer||'미지정');
+      if(l.status==='완료')s.done++; else if(l.status==='노쇼')s.noshow++; else if(l.status==='휴강')s.rest++; else s.booked++;
+      if(l.member_id)s.members.add(l.member_id); });
+    monthPays.forEach(p=>{ if(!p.membership_id)return; const t=trainerByMs[p.membership_id]; if(t) get(t).revenue+=(p.amount||0); });
+    return Object.entries(st).sort((a,b)=>(b[1].done+b[1].booked)-(a[1].done+a[1].booked)); },[monthLessons,monthPays,trainerByMs]);
   return (<div>
     <div className="sales-nav">
       <button onClick={()=>move(-1)}>← 이전달</button>
@@ -1745,6 +1861,21 @@ function SalesView({sb}){
           {byDay.map((v,i)=><div key={i} className="bar" style={{height:Math.max(2,v/maxDay*100)+'%',opacity:v?1:.2}} title={`${i+1}일 · ${v.toLocaleString()}원`}/>)}
         </div>
         <div className="saleschart-x">{byDay.map((v,i)=><span key={i}>{(i+1)%5===0||i===0?i+1:''}</span>)}</div></>}
+    </div>
+    <div className="mp-cardbox" style={{marginBottom:16}}>
+      <h3><span>강사별 실적 · {ref.m+1}월</span></h3>
+      {trainerStats.length===0? <div className="muted">{ref.m+1}월 수업 기록이 없습니다</div> :
+        <table className="ptable"><thead><tr><th>강사</th><th style={{textAlign:'right'}}>완료</th><th style={{textAlign:'right'}}>예정</th><th style={{textAlign:'right'}}>노쇼</th><th style={{textAlign:'right'}}>휴강</th><th style={{textAlign:'right'}}>수업회원</th><th style={{textAlign:'right'}}>매출 기여</th></tr></thead>
+          <tbody>{trainerStats.map(([t,s])=>(<tr key={t}>
+            <td style={{fontWeight:700}}>{t}</td>
+            <td style={{textAlign:'right'}}>{s.done}</td>
+            <td style={{textAlign:'right'}}>{s.booked}</td>
+            <td style={{textAlign:'right',color:s.noshow?'#d98b7a':undefined}}>{s.noshow}</td>
+            <td style={{textAlign:'right'}}>{s.rest}</td>
+            <td style={{textAlign:'right'}}>{s.members.size}명</td>
+            <td style={{textAlign:'right'}}>{s.revenue?s.revenue.toLocaleString()+'원':'-'}</td>
+          </tr>))}</tbody></table>}
+      <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>매출 기여 = 이달 결제 중 해당 강사 담당 회원권으로 들어온 금액.</p>
     </div>
     <div className="mp-cardbox">
       <h3><span>거래 내역 {monthPays.length?`(${monthPays.length})`:''}</span>{monthPays.length>0 && <button className="btn ghost sm" onClick={exportCSV}>⤓ 엑셀 내보내기</button>}</h3>
@@ -1898,7 +2029,29 @@ function ProductModal({sb,product,onClose,onSaved}){
 function LogsView({sb}){
   const [rows,setRows]=useState(null);
   const [q,setQ]=useState('');
+  const [backing,setBacking]=useState(false);
   async function load(){ const {data}=await sb.from('logs').select('*').order('at',{ascending:false}).limit(500); setRows(data||[]); }
+  // 전체 백업: 모든 테이블을 JSON 파일 하나로 다운로드 (복원·보관용)
+  async function backupAll(){
+    setBacking(true);
+    try{
+      const tables=['members','memberships','lessons','payments','lockers','products','trainer_colors','logs'];
+      const dump={exported_at:new Date().toISOString(), app:'GYMLORD CRM', tables:{}};
+      for(const t of tables){
+        let all=[], from=0;
+        const oc = t==='trainer_colors' ? 'name' : 'id';
+        while(true){ const {data,error}=await sb.from(t).select('*').order(oc,{ascending:true}).range(from,from+999);
+          if(error) throw new Error(t+': '+error.message);
+          all=all.concat(data||[]); if(!data||data.length<1000) break; from+=1000; }
+        dump.tables[t]=all;
+      }
+      const blob=new Blob([JSON.stringify(dump)],{type:'application/json'});
+      const u=URL.createObjectURL(blob), a=document.createElement('a');
+      a.href=u; a.download=`gymlord_백업_${ymd(new Date())}.json`; a.click(); URL.revokeObjectURL(u);
+      logAct(sb,'전체 백업',Object.entries(dump.tables).map(([k,v])=>`${k} ${v.length}`).join(', '));
+    }catch(e){ alert('백업 실패: '+e.message); }
+    setBacking(false);
+  }
   useEffect(()=>{ load(); },[]);
   const fmtLog=s=>{ const d=new Date(s); return isNaN(d)?'-':`${d.getFullYear()}.${d.getMonth()+1}.${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
   const filtered=(rows||[]).filter(r=>{
@@ -1910,6 +2063,7 @@ function LogsView({sb}){
     <div className="bar" style={{marginTop:18}}>
       <input className="search" placeholder="로그 검색 — 예: 강수빈 / 삭제 / 락커 / 미수금" value={q} onChange={e=>setQ(e.target.value)}/>
       <button className="btn ghost sm" onClick={load}>새로고침</button>
+      <button className="btn ghost sm" disabled={backing} onClick={backupAll}>{backing?'백업 중...':'⤓ 전체 백업'}</button>
     </div>
     {rows!==null && <div className="muted" style={{fontSize:13,marginBottom:10}}>{q.trim()? `검색 결과 ${filtered.length}건` : `최근 ${rows.length}건`} <span style={{opacity:.7}}>· 최근 500건까지 표시</span></div>}
     {rows===null? <div className="empty">불러오는 중...</div> :
