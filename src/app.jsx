@@ -1334,13 +1334,19 @@ function CalendarView({sb}){
   const [dayView,setDayView]=useState(null);
   const [mode,setMode]=useState('month');
   const [anchor,setAnchor]=useState(()=>new Date(today.getFullYear(),today.getMonth(),today.getDate()));
+  // 모바일(≤860px) = 현장용 아젠다 뷰
+  const [isMobile,setIsMobile]=useState(()=>window.matchMedia('(max-width:860px)').matches);
+  useEffect(()=>{ const mq=window.matchMedia('(max-width:860px)'); const h=e=>setIsMobile(e.matches);
+    mq.addEventListener('change',h); return ()=>mq.removeEventListener('change',h); },[]);
+  const [sheet,setSheet]=useState(null); // 모바일 액션시트 대상 수업
   const weekStart=new Date(anchor); weekStart.setDate(anchor.getDate()-anchor.getDay()); weekStart.setHours(0,0,0,0);
   const weekDates=Array.from({length:7},(_,i)=>{ const d=new Date(weekStart); d.setDate(weekStart.getDate()+i); return d; });
   const weekEnd=new Date(weekStart); weekEnd.setDate(weekStart.getDate()+7);
 
   async function loadLessons(){
     let s,e;
-    if(mode==='day'){ s=new Date(anchor.getFullYear(),anchor.getMonth(),anchor.getDate()); e=new Date(s); e.setDate(e.getDate()+1); }
+    if(isMobile){ s=new Date(weekStart); e=new Date(weekEnd); } // 아젠다: 보는 주만 로드
+    else if(mode==='day'){ s=new Date(anchor.getFullYear(),anchor.getMonth(),anchor.getDate()); e=new Date(s); e.setDate(e.getDate()+1); }
     else if(mode==='week'){ s=new Date(weekStart); e=new Date(weekEnd); }
     else { s=new Date(cur.getFullYear(),cur.getMonth(),1); e=new Date(cur.getFullYear(),cur.getMonth()+1,1); }
     const {data}=await sb.from('lessons').select('*').gte('start_at',s.toISOString()).lt('start_at',e.toISOString()).order('start_at');
@@ -1350,7 +1356,7 @@ function CalendarView({sb}){
     const {data:n}=await sb.rpc('auto_complete_overdue');
     if(n>0) setAutoMsg(`지난 예약 ${n}건을 자동 완료 처리했습니다.`);
     loadLessons();
-  })(); },[cur,mode,anchor]);
+  })(); },[cur,mode,anchor,isMobile]);
   useEffect(()=>{
     sb.from('members').select('id,name,phone,status').order('name').then(({data})=>setMembers(data||[]));
     sb.from('lessons').select('trainer').not('trainer','is',null).limit(5000).then(({data})=>setTrainerPool([...new Set((data||[]).map(r=>r.trainer).filter(Boolean))]));
@@ -1406,7 +1412,7 @@ function CalendarView({sb}){
   const weekEndD=weekDates[6];
 
   return (<div onClick={()=>{ if(ctx)setCtx(null); if(picker)setPicker(false); }}>
-    <div className="cal-head">
+    {!isMobile && <div className="cal-head">
       <div className="seg" style={{width:170,marginRight:6}}>
         <button className={mode==='month'?'on':''} onClick={()=>setMode('month')}>월</button>
         <button className={mode==='week'?'on':''} onClick={()=>setMode('week')}>주</button>
@@ -1423,7 +1429,7 @@ function CalendarView({sb}){
       <button className="btn ghost sm" onClick={e=>{e.stopPropagation();setImporter(true);}}>주간스케줄 가져오기</button>
       <div className="muted" style={{marginLeft:'auto',fontSize:13}}>날짜 클릭=예약 · 수업 우클릭=완료/휴강/노쇼</div>
       {picker && mode==='month' && <MonthPicker cur={cur} onPick={(y,m)=>{ setCur(new Date(y,m-1,1)); setPicker(false); }}/>}
-    </div>
+    </div>}
     {autoMsg && <div className="autobar">{autoMsg}</div>}
     {trainers.length>0 && <div className="trainer-legend">
       <button className={'tl-chip'+(trainerFilter==='all'?' on':'')} onClick={()=>setTrainerFilter('all')}>전체 강사</button>
@@ -1443,7 +1449,42 @@ function CalendarView({sb}){
             style={{width:18,height:18,border:'none',background:'none',padding:0,cursor:'pointer'}}/>{t}
         </label>))}
     </div>}
-    {mode==='day' ? (()=>{
+    {isMobile ? (()=>{ // ── 모바일: 현장용 아젠다 ──
+      const selKey=ymd(anchor);
+      const items=(byDate[selKey]||[]).slice().sort((a,b)=>a.start_at<b.start_at?-1:1);
+      const nowIso=new Date().toISOString();
+      const nextL=(selKey===todayKey)? items.find(l=>l.status==='예약'&&l.start_at>=nowIso) : null;
+      const DOW=['일','월','화','수','목','금','토'];
+      return (<div className="agenda">
+        <div className="ag-head">
+          <button className="btn ghost sm" onClick={()=>{const d=new Date(anchor);d.setDate(d.getDate()-7);setAnchor(d);}}>‹</button>
+          <button className="mtitle-btn" onClick={e=>{e.stopPropagation(); setPicker(p=>!p);}}>{anchor.getFullYear()}년 {anchor.getMonth()+1}월 ▾</button>
+          <button className="btn ghost sm" onClick={()=>{const d=new Date(anchor);d.setDate(d.getDate()+7);setAnchor(d);}}>›</button>
+          <button className="btn ghost sm" style={{marginLeft:'auto'}} onClick={goToday}>오늘</button>
+          {picker && <MonthPicker cur={anchor} onPick={(y,m)=>{ const d=new Date(y,m-1,1); setAnchor(d); setCur(d); setPicker(false); }}/>}
+        </div>
+        <div className="ag-week">
+          {weekDates.map((d,i)=>{ const k=ymd(d); const cnt=(byDate[k]||[]).length;
+            return (<button key={i} className={'ag-day'+(k===selKey?' sel':'')+(k===todayKey?' today':'')} onClick={()=>setAnchor(new Date(d))}>
+              <span className="ag-dow">{DOW[i]}</span>
+              <span className="ag-num">{d.getDate()}</span>
+              <span className={'ag-dot'+(cnt?' on':'')}/>
+            </button>); })}
+        </div>
+        <div className="ag-title">{anchor.getMonth()+1}월 {anchor.getDate()}일 ({DOW[anchor.getDay()]}) · 수업 {items.length}건 <span style={{opacity:.6}}>· 카드를 누르면 완료/노쇼 처리</span></div>
+        {items.length===0? <div className="empty" style={{cursor:'pointer'}} onClick={()=>setBooking({date:selKey})}>이날 수업이 없습니다 · 아래 ＋ 버튼으로 예약</div> :
+          items.map(l=>{ const tc=l.trainer?trainerColors[l.trainer]:'var(--line)';
+            return (<button key={l.id} className={'ag-card'+(nextL&&l.id===nextL.id?' next':'')+(l.status!=='예약'?' st-'+l.status:'')}
+              style={{borderLeftColor:tc}} onClick={()=>setSheet(l)}>
+              <div className="ag-time">{hmRange(l)}</div>
+              <div className="ag-body">
+                <b>{l.member_id?memberName(l.member_id)+' · ':''}{l.lesson_name}</b>
+                <span className="muted">{l.trainer||'강사 미지정'}{l.noshow_reason?' · 노쇼: '+l.noshow_reason:''}</span>
+              </div>
+              <span className={'mini '+l.status}>{l.status}</span>
+            </button>); })}
+      </div>);
+    })() : mode==='day' ? (()=>{
       const k=ymd(anchor); const items=(byDate[k]||[]).slice().sort((a,b)=>a.start_at<b.start_at?-1:1);
       const byT={}; items.forEach(l=>{ const t=l.trainer||'미지정'; (byT[t]=byT[t]||[]).push(l); });
       const cols=Object.keys(byT).sort((a,b)=>a==='미지정'?1:b==='미지정'?-1:a.localeCompare(b,'ko'));
@@ -1510,6 +1551,23 @@ function CalendarView({sb}){
     {noshow && <NoshowModal lesson={noshow} onClose={()=>setNoshow(null)} onConfirm={r=>setStatus(noshow,'노쇼',r)}/>}
     {dayView && <DayModal date={dayView.date} items={byDate[dayView.date]||[]} memberName={memberName} chipStyle={chipStyle}
         onClose={()=>setDayView(null)} onCtx={c=>setCtx(c)}/>}
+
+    {isMobile && sheet && (<>
+      <div className="sheet-ov" onClick={()=>setSheet(null)}/>
+      <div className="sheet">
+        <div className="sheet-head">
+          <b>{sheet.member_id?memberName(sheet.member_id)+' · ':''}{sheet.lesson_name}</b>
+          <span className="muted">{hmRange(sheet)} · {sheet.trainer||'강사 미지정'} · <span className={'mini '+sheet.status}>{sheet.status}</span></span>
+        </div>
+        <button onClick={()=>{setStatus(sheet,'완료');setSheet(null);}}>✓ 수업 완료</button>
+        <button onClick={()=>{setStatus(sheet,'휴강');setSheet(null);}}>⊘ 휴강 (+1 복구)</button>
+        <button onClick={()=>{setNoshow(sheet);setSheet(null);}}>✗ 노쇼 (차감 유지)</button>
+        {sheet.status!=='예약' && <button onClick={()=>{setStatus(sheet,'예약');setSheet(null);}}>↺ 예약으로 되돌리기</button>}
+        <button className="danger" onClick={()=>{del(sheet);setSheet(null);}}>🗑 수업 삭제</button>
+        <button className="cancel" onClick={()=>setSheet(null)}>닫기</button>
+      </div>
+    </>)}
+    {isMobile && <button className="fab" onClick={()=>setBooking({date:ymd(anchor)})} aria-label="수업 예약">＋</button>}
   </div>);
 }
 
