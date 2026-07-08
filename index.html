@@ -186,6 +186,10 @@
     .main{padding:0 14px calc(72px + env(safe-area-inset-bottom))}
     .mpage{left:0;padding-bottom:calc(72px + env(safe-area-inset-bottom))}
     .mp-body{padding:14px 14px calc(20px + env(safe-area-inset-bottom))}
+    .mlist-table .row{grid-template-columns:32px 34px 62px minmax(0,1fr) 96px;gap:6px;padding:12px 10px}
+    .mlist-table .row>div:nth-child(5),.mlist-table .row>div:nth-child(6){display:none}
+    .mlist-table .name{white-space:normal;line-height:1.22;word-break:keep-all;overflow-wrap:anywhere}
+    .mlist-table .phone{white-space:normal;line-height:1.22;overflow-wrap:anywhere;font-size:13px}
     .row.logrow{grid-template-columns:110px 100px 1fr;} .row.logrow>div:last-child{display:none}
     /* 모바일에서 카드 hover 상승 효과 끔 (터치 → 잔상) */
     .mp-cardbox:hover,.stat:hover,.locker:hover{transform:none}
@@ -388,6 +392,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=48"></script>
+<script src="app.bundle.js?v=49"></script>
 </body>
 </html>

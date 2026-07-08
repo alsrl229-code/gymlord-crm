@@ -418,7 +418,7 @@ function Detail({sb,member:m0,onClose}){
   const validCnt=(ms||[]).filter(m=>m.status==='활성'||m.status==='홀딩').length;
   const expiredCnt=(ms||[]).filter(m=>m.status!=='활성'&&m.status!=='홀딩').length;
   const unpaidTotal=(ms||[]).reduce((s,m)=>s+(m.unpaid||0),0);
-  return (<>
+  return createPortal((<>
     <div className="mpage">
       <div className="mpage-top">
         <h2>{member.name} <span className={'badge b-'+(member.status||'')}>{member.status||'-'}</span></h2>
@@ -510,7 +510,7 @@ function Detail({sb,member:m0,onClose}){
     {collect && <CollectModal sb={sb} member={member} memberships={ms||[]} onClose={()=>setCollect(false)} onSaved={()=>{reload();}}/>}
     {refund && <RefundModal sb={sb} member={member} payment={refund} onClose={()=>setRefund(null)} onSaved={()=>{setRefund(null);reload();}}/>}
     {editPay && <EditPaymentModal sb={sb} member={member} payment={editPay} onClose={()=>setEditPay(null)} onSaved={()=>{setEditPay(null);reload();}}/>}
-  </>);
+  </>), document.body);
 }
 
 // ---------- 환불 ----------
@@ -913,12 +913,16 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
   const [start,setStart]=useState('10:00'),[dur,setDur]=useState('50'),[trainer,setTrainer]=useState('');
   const [name,setName]=useState('1:1 PT'),[guestName,setGuestName]=useState(''),[err,setErr]=useState(''),[busy,setBusy]=useState(false);
   const [mss,setMss]=useState([]),[msId,setMsId]=useState(null);
+  const selectedMs=msId?mss.find(x=>String(x.id)===String(msId)):null;
+  const assignedTrainer=selectedMs?String(selectedMs.trainer||'').trim():'';
   const cands = q? members.filter(m=>{ const digits=q.replace(/\D/g,'');
     return (m.name||'').includes(q) || (digits && (m.phone||'').replace(/\D/g,'').includes(digits)); }).slice(0,8):[];
   async function selectMember(m){
     setSel(m);
     const {data}=await sb.from('memberships').select('*').eq('member_id',m.id).eq('status','활성').gt('remaining_count',0).order('end_date',{nullsFirst:false});
-    setMss(data||[]); setMsId(data&&data[0]? data[0].id : null);
+    const list=data||[];
+    setMss(list); setMsId(list[0]? list[0].id : null);
+    setTrainer(list[0]?String(list[0].trainer||'').trim():'');
   }
   function times(){ const startISO=new Date(`${date}T${start}:00+09:00`); const endISO=new Date(startISO.getTime()+(parseInt(dur)||50)*60000); return [startISO.toISOString(), endISO.toISOString()]; }
   async function conflictOK(s,e){
@@ -935,23 +939,27 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
     if(!sel) return setErr('회원을 선택하세요');
     const n=Math.max(1,Math.min(20,parseInt(repeat)||1));
     setErr('');
+    const picked=msId?mss.find(x=>String(x.id)===String(msId)):null;
+    if(!picked) return setErr('차감할 회원권을 선택하세요. 회원권이 없으면 회원 상세에서 레슨/회원권을 먼저 등록해주세요.');
+    const fixedTrainer=String(picked.trainer||'').trim();
+    if(!fixedTrainer) return setErr('선택한 회원권에 담당 강사가 없습니다. 회원권 수정에서 담당 강사를 먼저 지정하세요.');
+    setTrainer(fixedTrainer);
     // 잔여횟수 검증: 반복 수가 잔여보다 많으면 차단
-    if(msId){ const m=mss.find(x=>x.id===msId);
-      if(m && n>(m.remaining_count||0)) return setErr(`잔여 ${m.remaining_count}회인데 ${n}회를 예약하려고 합니다. 반복 횟수를 줄여주세요.`); }
+    if(n>(picked.remaining_count||0)) return setErr(`잔여 ${picked.remaining_count}회인데 ${n}회를 예약하려고 합니다. 반복 횟수를 줄여주세요.`);
     setBusy(true);
     // 전체 기간 충돌 일괄 확인 (강사 지정 시)
-    if(trainer){
+    if(fixedTrainer){
       const d0=new Date(`${date}T00:00:00+09:00`).toISOString();
       const dEnd=new Date(`${nthDate(n-1)}T23:59:59+09:00`).toISOString();
-      const {data:exist}=await sb.from('lessons').select('start_at,end_at,lesson_name').eq('trainer',trainer).eq('status','예약').gte('start_at',d0).lte('start_at',dEnd);
+      const {data:exist}=await sb.from('lessons').select('start_at,end_at,lesson_name').eq('trainer',fixedTrainer).eq('status','예약').gte('start_at',d0).lte('start_at',dEnd);
       const clashes=[];
       for(let i=0;i<n;i++){ const di=nthDate(i); const s=new Date(`${di}T${start}:00+09:00`).toISOString(); const e=new Date(new Date(s).getTime()+(parseInt(dur)||50)*60000).toISOString();
         const c=(exist||[]).find(l=> l.start_at<e && (l.end_at||l.start_at)>s); if(c) clashes.push(`${di} ${hm(c.start_at)} (${c.lesson_name})`); }
-      if(clashes.length && !confirm(`⚠️ ${trainer} 강사 기존 예약과 겹칩니다:\n${clashes.join('\n')}\n\n그래도 전부 예약할까요?`)){ setBusy(false); return; }
+      if(clashes.length && !confirm(`⚠️ ${fixedTrainer} 강사 기존 예약과 겹칩니다:\n${clashes.join('\n')}\n\n그래도 전부 예약할까요?`)){ setBusy(false); return; }
     }
     // 일괄 삽입
     const rows=[]; for(let i=0;i<n;i++){ const di=nthDate(i); const s=new Date(`${di}T${start}:00+09:00`).toISOString(); const e=new Date(new Date(s).getTime()+(parseInt(dur)||50)*60000).toISOString();
-      rows.push({member_id:sel.id, membership_id:msId, start_at:s, end_at:e, lesson_name:name, trainer:trainer||null, status:'예약'}); }
+      rows.push({member_id:sel.id, membership_id:msId, start_at:s, end_at:e, lesson_name:name, trainer:fixedTrainer, status:'예약'}); }
     const {error}=await sb.from('lessons').insert(rows);
     if(error){ setBusy(false); return setErr('저장 실패: '+error.message); }
     if(msId) for(let i=0;i<n;i++) await sb.rpc('consume_specific',{p_membership_id:msId}); // 예약 즉시 차감 × n
@@ -984,10 +992,13 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
           <div className="card" style={{margin:0,display:'flex',justifyContent:'space-between'}}><b>{sel.name}</b>
             <button className="link" style={{margin:0}} onClick={()=>setSel(null)}>변경</button></div></div>
         <div className="field"><label>차감할 회원권 <span className="muted">(예약 시 1회 즉시 차감)</span></label>
-          {mss.length===0? <div className="muted" style={{fontSize:13}}>활성 회원권이 없습니다 — 예약은 되지만 차감되지 않습니다.</div> :
-            <select value={msId||''} onChange={e=>setMsId(e.target.value?parseInt(e.target.value):null)}>
-              {mss.map(m=><option key={m.id} value={m.id}>{m.product_name} · 잔여 {m.remaining_count}/{m.total_count}</option>)}
-            </select>}</div>
+          {mss.length===0? <div className="muted" style={{fontSize:13}}>활성 회원권이 없습니다. 회원 상세에서 레슨/회원권을 먼저 등록하세요.</div> :
+            <>
+              <select value={msId||''} onChange={e=>{ const id=e.target.value?parseInt(e.target.value):null; const m=mss.find(x=>String(x.id)===String(id)); setMsId(id); setTrainer(m?String(m.trainer||'').trim():''); }}>
+                {mss.map(m=><option key={m.id} value={m.id}>{m.product_name} · 담당 {m.trainer||'미지정'} · 잔여 {m.remaining_count}/{m.total_count}</option>)}
+              </select>
+              <div className="muted" style={{fontSize:12,marginTop:5}}>선택한 회원권의 담당강사만 예약할 수 있습니다.</div>
+            </>}</div>
         <div className="field"><label>수업명</label>
           <div className="seg">{['1:1 PT','OT','상담'].map(t=>(
             <button key={t} type="button" className={name===t?'on':''} onClick={()=>setName(t)}>{t}</button>))}</div></div>
@@ -996,16 +1007,15 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
           <div className="field" style={{width:100}}><label>길이(분)</label><input type="number" value={dur} onChange={e=>setDur(e.target.value)}/></div>
         </div>
         <div className="row2">
-          <div className="field" style={{flex:1}}><label>강사</label>
-            <input list="trainers" value={trainer} onChange={e=>setTrainer(e.target.value)} placeholder="강사명"/>
-            <datalist id="trainers">{trainers.map(t=><option key={t} value={t}/>)}</datalist></div>
+          <div className="field" style={{flex:1}}><label>담당 강사</label>
+            <div className="card" style={{margin:0,padding:'9px 11px',fontWeight:700,color:assignedTrainer?'var(--cream)':'#d98b7a'}}>{assignedTrainer||'담당 강사 미지정'}</div></div>
           <div className="field" style={{width:130}}><label>반복(매주)</label>
             <select value={repeat} onChange={e=>setRepeat(e.target.value)}>
               {Array.from({length:20},(_,i)=>i+1).map(n=><option key={n} value={n}>{n===1?'1회 (반복없음)':`매주 ×${n}회`}</option>)}
             </select></div>
         </div>
         {parseInt(repeat)>1 && <p className="muted" style={{fontSize:12,margin:'-4px 0 10px'}}>{date}부터 매주 같은 요일 {start}에 {repeat}회 예약됩니다 (마지막 {nthDate(parseInt(repeat)-1)}){msId?' · 잔여횟수도 '+repeat+'회 차감':''}.</p>}
-        <button className="btn" disabled={busy} onClick={saveMember}>{busy?'저장 중...':parseInt(repeat)>1?`${repeat}회 일괄 예약`:'예약 저장'}</button>
+        <button className="btn" disabled={busy||!selectedMs||!assignedTrainer} onClick={saveMember}>{busy?'저장 중...':parseInt(repeat)>1?`${repeat}회 일괄 예약`:'예약 저장'}</button>
       </>) : <>
         <div className="field"><label>수업 종류</label>
           <div className="seg">{['OT','상담','기타'].map(t=>(
@@ -1049,6 +1059,7 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
       missing_member:['b-만료','회원없음'],
       ambiguous_member:['b-만료','동명이인'],
       no_membership:['b-임박','회원권없음'],
+      trainer_mismatch:['b-만료','강사불일치'],
       invalid:['b-만료','형식오류'],
       error:['b-만료','오류']
     };
@@ -1103,6 +1114,7 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
   function lessonCategory(name){
     return /대표/.test(name) ? '대표PT' : /1:1/.test(name) ? '1:1PT' : 'PT';
   }
+  function normTrainer(v){ return String(v||'').trim(); }
 
   async function buildItems(){
     setErr('');
@@ -1146,7 +1158,7 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
     const memberIds=[...new Set(valid.map(x=>x.member.id))];
     const msByMember={};
     if(memberIds.length){
-      const {data,error}=await sb.from('memberships').select('id,member_id,product_name,remaining_count,total_count,end_date').in('member_id',memberIds).eq('status','활성').gt('remaining_count',0).order('end_date',{nullsFirst:false});
+      const {data,error}=await sb.from('memberships').select('id,member_id,product_name,remaining_count,total_count,end_date,trainer').in('member_id',memberIds).eq('status','활성').gt('remaining_count',0).order('end_date',{nullsFirst:false});
       if(error){ setErr('회원권 조회 실패: '+error.message); return []; }
       (data||[]).forEach(ms=>{ (msByMember[ms.member_id]=msByMember[ms.member_id]||[]).push(ms); });
     }
@@ -1161,9 +1173,11 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
     }
 
     const remainingByMs={};
-    function takeMembership(memberId){
+    function takeMembership(memberId, trainerName){
       const list=msByMember[memberId]||[];
+      const wanted=normTrainer(trainerName);
       for(const ms of list){
+        if(normTrainer(ms.trainer)!==wanted) continue;
         const left=remainingByMs[ms.id] ?? ms.remaining_count;
         if(left>0){
           remainingByMs[ms.id]=left-1;
@@ -1179,8 +1193,18 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
       if(dup) return {...item,status:'duplicate',membership:null,message:'이미 같은 회원/시작시간 예약이 있습니다.'};
       const conflict=existing.find(l=>l.trainer===item.trainer && l.status==='예약' && new Date(l.start_at)<item.endDate && new Date(l.end_at||l.start_at)>item.startDate);
       if(conflict && skipConflicts) return {...item,status:'conflict',membership:null,message:`${item.trainer} ${hm(conflict.start_at)} 기존 예약과 겹칩니다.`};
-      const membership=takeMembership(item.member.id);
-      if(!membership && !allowNoMembership) return {...item,status:'no_membership',membership:null,message:'차감 가능한 활성 회원권이 없습니다.'};
+      const membership=takeMembership(item.member.id,item.trainer);
+      if(!membership){
+        const list=msByMember[item.member.id]||[];
+        const wanted=normTrainer(item.trainer);
+        const hasSameTrainer=list.some(ms=>normTrainer(ms.trainer)===wanted);
+        if(list.length && !hasSameTrainer){
+          const names=[...new Set(list.map(ms=>normTrainer(ms.trainer)||'담당 미지정'))].join(', ');
+          return {...item,status:'trainer_mismatch',membership:null,message:`담당강사(${names}) 외 강사로는 등록할 수 없습니다.`};
+        }
+        if(list.length) return {...item,status:'no_membership',membership:null,message:`${wanted||'선택 강사'} 담당 회원권 잔여횟수가 부족합니다.`};
+        if(!allowNoMembership) return {...item,status:'no_membership',membership:null,message:'차감 가능한 활성 회원권이 없습니다.'};
+      }
       return {...item,status:'ready',membership,message:membership?`${membership.product_name} 차감 예정`:'회원권 없이 예약만 등록'};
     });
     setItems(checked);
