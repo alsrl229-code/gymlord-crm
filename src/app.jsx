@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { createRoot } from 'react-dom/client';
+import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
 
 const LS = { url:'gl_sb_url', key:'gl_sb_key' };
@@ -1483,6 +1484,7 @@ function CalendarView({sb}){
               </div>
               <span className={'mini '+l.status}>{l.status}</span>
             </button>); })}
+        {items.length>0 && <button className="ag-add" onClick={()=>setBooking({date:selKey})}>＋ 수업 추가</button>}
       </div>);
     })() : mode==='day' ? (()=>{
       const k=ymd(anchor); const items=(byDate[k]||[]).slice().sort((a,b)=>a.start_at<b.start_at?-1:1);
@@ -1552,7 +1554,7 @@ function CalendarView({sb}){
     {dayView && <DayModal date={dayView.date} items={byDate[dayView.date]||[]} memberName={memberName} chipStyle={chipStyle}
         onClose={()=>setDayView(null)} onCtx={c=>setCtx(c)}/>}
 
-    {isMobile && sheet && (<>
+    {isMobile && sheet && createPortal(<>
       <div className="sheet-ov" onClick={()=>setSheet(null)}/>
       <div className="sheet">
         <div className="sheet-head">
@@ -1566,8 +1568,10 @@ function CalendarView({sb}){
         <button className="danger" onClick={()=>{del(sheet);setSheet(null);}}>🗑 수업 삭제</button>
         <button className="cancel" onClick={()=>setSheet(null)}>닫기</button>
       </div>
-    </>)}
-    {isMobile && <button className="fab" onClick={()=>setBooking({date:ymd(anchor)})} aria-label="수업 예약">＋</button>}
+    </>, document.body)}
+    {isMobile && createPortal(
+      <button className="fab" onClick={()=>setBooking({date:ymd(anchor)})} aria-label="수업 예약">＋</button>,
+      document.body)}
   </div>);
 }
 

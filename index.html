@@ -134,6 +134,10 @@
   .ag-body{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
   .ag-body b{font-size:15px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   .ag-body .muted{font-size:12px}
+  .ag-add{display:block;width:100%;text-align:center;background:none;border:1px dashed var(--brassline);
+    border-radius:12px;padding:13px;margin:4px 0 2px;color:var(--brass);font-size:14px;font-weight:600;
+    font-family:inherit;cursor:pointer}
+  .ag-add:active{background:rgba(176,141,87,.1)}
   .fab{position:fixed;right:16px;bottom:calc(86px + env(safe-area-inset-bottom));width:58px;height:58px;border-radius:50%;
     background:var(--metal);color:#1b1205;font-size:30px;font-weight:700;border:none;z-index:16;line-height:1;
     box-shadow:0 10px 24px -8px rgba(0,0,0,.7), inset 0 1px 0 rgba(255,244,222,.4);
@@ -384,6 +388,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=47"></script>
+<script src="app.bundle.js?v=48"></script>
 </body>
 </html>
