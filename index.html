@@ -255,7 +255,21 @@
   .ptable th{color:var(--muted);text-align:left;font-weight:600;padding:6px 8px;border-bottom:1px solid var(--line);font-size:12px}
   .ptable td{padding:9px 8px;border-bottom:1px solid var(--line);color:var(--cream)}
   .ptable tr:last-child td{border-bottom:none}
-  @media(max-width:860px){ .mp-body{grid-template-columns:1fr} .mp-left{position:static} }
+  @media(max-width:860px){
+    .mpage{top:0;right:0;bottom:0;left:0;width:100vw;height:100dvh;max-width:none;z-index:50;
+      padding-bottom:0;overflow-y:auto;overscroll-behavior:contain;-webkit-overflow-scrolling:touch}
+    .mpage-top{padding:calc(12px + env(safe-area-inset-top)) 16px 12px;min-height:64px}
+    .mpage-top h2{font-size:22px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+    .mpage-close{width:44px;height:44px;font-size:30px;display:flex;align-items:center;justify-content:center;flex:0 0 44px}
+    .mp-body{max-width:none;width:100%;display:block;padding:16px 14px calc(24px + env(safe-area-inset-bottom))}
+    .mp-left{position:static;width:100%;max-width:none;margin:0 0 16px;padding:18px;border-radius:14px}
+    .mp-grid{display:grid;grid-template-columns:1fr;gap:14px}
+    .mp-cardbox{padding:16px;border-radius:12px}
+    .mp-acts{gap:10px}
+    .mp-acts .btn{min-height:64px;white-space:normal}
+    .mp-info .kv{align-items:flex-start;gap:12px}
+    .mp-info .kv b{max-width:62%;overflow-wrap:anywhere;word-break:keep-all}
+  }
   .center{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:20px}
   .gl-scene{position:relative;overflow:hidden}
   .gl-scene>svg:first-child{position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);pointer-events:none;z-index:0}
@@ -392,6 +406,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=49"></script>
+<script src="app.bundle.js?v=50"></script>
 </body>
 </html>
