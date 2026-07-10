@@ -1829,6 +1829,15 @@ function LockersView({sb}){
 }
 
 // ---------- 홈 대시보드 ----------
+// 마지막 연락 이후 경과 (30일 이내만 표시)
+function contactAgo(iso){
+  if(!iso) return null;
+  const d=new Date(iso); if(isNaN(d)) return null;
+  const days=Math.floor((Date.now()-d.getTime())/86400000);
+  if(days>30) return null;
+  return days<=0?'오늘 연락':days===1?'어제 연락':`${days}일 전 연락`;
+}
+
 function DashboardView({sb}){
   const [members,setMembers]=useState(null);
   const [ms,setMs]=useState([]);
@@ -1874,6 +1883,25 @@ function DashboardView({sb}){
   (members||[]).forEach(m=>{ if(m.status==='활성')counts.활성++; });
   const nm=id=>(memById[id]&&memById[id].name)||'-';
   const openMember=id=>{ const m=memById[id]; if(m) setSel(m); };
+  // 영업 액션: 연락함 기록 (DB + 로컬상태 + 로그)
+  async function markContacted(mem){
+    if(!mem) return;
+    const now=new Date().toISOString();
+    const {error}=await sb.from('members').update({last_contact_at:now}).eq('id',mem.id);
+    if(error){ alert('기록 실패: '+error.message); return; }
+    logAct(sb,'연락함',mem.name);
+    setMembers(list=>(list||[]).map(x=>x.id===mem.id?{...x,last_contact_at:now}:x));
+  }
+  const telOf=mem=>String((mem&&mem.phone)||'').replace(/[^\d+]/g,'');
+  // 행 우측 액션 (전화 / 연락함) — 행 클릭(상세열기)과 충돌 방지
+  const acts=mem=>(
+    <span className="cact" onClick={e=>e.stopPropagation()}>
+      {telOf(mem)
+        ? <a className="cbtn" href={'tel:'+telOf(mem)} title={`전화 걸기 ${mem.phone}`}>📞</a>
+        : <span className="cbtn off" title="연락처 없음">📞</span>}
+      <button className="cbtn" title="연락함으로 표시" onClick={()=>markContacted(mem)}>✓</button>
+    </span>);
+  const cbadge=mem=>{ const t=contactAgo(mem&&mem.last_contact_at); return t? <span className="cbadge">✓ {t}</span> : null; };
   if(members===null) return <div className="empty">불러오는 중...</div>;
   return (<div>
     <div className="stats">
@@ -1887,24 +1915,33 @@ function DashboardView({sb}){
         <h3><span>⏰ 만료 임박</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{soon.length}건</span></h3>
         {soon.length===0? <div className="muted">14일 내 만료 예정인 회원권이 없습니다</div> :
           soon.slice(0,15).map(({m,d})=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.member_id)}>
-            <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name} · ~{fmtDate(m.end_date)}</span></div>
-            <span className={'dday'+(d<=3?' expired':'')}>{d===0?'오늘 만료':'D-'+d}</span>
+            <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name} · ~{fmtDate(m.end_date)}</span>{cbadge(memById[m.member_id])}</div>
+            <div className="dash-right">
+              <span className={'dday'+(d<=3?' expired':'')}>{d===0?'오늘 만료':'D-'+d}</span>
+              {acts(memById[m.member_id])}
+            </div>
           </div>))}
       </div>
       <div className="mp-cardbox">
         <h3><span>💰 미수금</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{unpaid.length}명 · {unpaidTotal.toLocaleString()}원</span></h3>
         {unpaid.length===0? <div className="muted">미수금이 없습니다</div> :
           unpaid.slice(0,15).map(m=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.member_id)}>
-            <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name}</span></div>
-            <span style={{color:'#d98b7a',fontWeight:700}}>{m.unpaid.toLocaleString()}원</span>
+            <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name}</span>{cbadge(memById[m.member_id])}</div>
+            <div className="dash-right">
+              <span style={{color:'#d98b7a',fontWeight:700}}>{m.unpaid.toLocaleString()}원</span>
+              {acts(memById[m.member_id])}
+            </div>
           </div>))}
       </div>
       <div className="mp-cardbox">
         <h3><span>🎂 오늘 생일</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{birthdays.length}명</span></h3>
         {birthdays.length===0? <div className="muted">오늘 생일인 회원이 없습니다</div> :
           birthdays.map(m=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.id)}>
-            <div><b>{m.name}</b> <span className="muted" style={{fontSize:13}}>· {m.phone||''}</span></div>
-            <span className="muted">{age(m.birth)}</span>
+            <div><b>{m.name}</b> <span className="muted" style={{fontSize:13}}>· {m.phone||''}</span>{cbadge(m)}</div>
+            <div className="dash-right">
+              <span className="muted">{age(m.birth)}</span>
+              {acts(m)}
+            </div>
           </div>))}
       </div>
       <div className="mp-cardbox">
@@ -1919,8 +1956,11 @@ function DashboardView({sb}){
         <h3><span>🔻 잔여횟수 임박</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>3회 이하 · {lowCount.length}건</span></h3>
         {lowCount.length===0? <div className="muted">잔여 3회 이하인 회원권이 없습니다</div> :
           lowCount.slice(0,15).map(m=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.member_id)}>
-            <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name}{m.trainer?` · ${m.trainer}`:''}</span></div>
-            <span style={{color:(m.remaining_count||0)===0?'#d98b7a':'#e0a23c',fontWeight:700}}>잔여 {m.remaining_count||0}/{m.total_count}</span>
+            <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name}{m.trainer?` · ${m.trainer}`:''}</span>{cbadge(memById[m.member_id])}</div>
+            <div className="dash-right">
+              <span style={{color:(m.remaining_count||0)===0?'#d98b7a':'#e0a23c',fontWeight:700}}>잔여 {m.remaining_count||0}/{m.total_count}</span>
+              {acts(memById[m.member_id])}
+            </div>
           </div>))}
         {lowCount.length>0 && <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>재등록 안내가 필요한 회원입니다.</p>}
       </div>
@@ -1928,8 +1968,11 @@ function DashboardView({sb}){
         <h3><span>🚪 최근 만료 · 미재등록</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>30일 내 · {churn.length}명</span></h3>
         {churn.length===0? <div className="muted">최근 30일 내 만료 후 미재등록 회원이 없습니다<br/><span style={{fontSize:12}}>(앞으로 회원권이 만료되면 여기에 표시됩니다)</span></div> :
           churn.slice(0,15).map(m=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.member_id)}>
-            <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name}</span></div>
-            <span className="muted" style={{fontSize:13}}>{fmtDate(m.end_date)} 만료</span>
+            <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name}</span>{cbadge(memById[m.member_id])}</div>
+            <div className="dash-right">
+              <span className="muted" style={{fontSize:13}}>{fmtDate(m.end_date)} 만료</span>
+              {acts(memById[m.member_id])}
+            </div>
           </div>))}
       </div>
       <div className="mp-cardbox">
