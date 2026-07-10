@@ -42,6 +42,48 @@ async function logAct(sb,action,detail){
   }catch(e){}
 }
 
+// ---------- 자동 백업(스냅샷) ----------
+const SNAP_TABLES=['members','memberships','lessons','payments','lockers','products','trainer_colors','logs'];
+async function dumpAllTables(sb){
+  const out={};
+  for(const t of SNAP_TABLES){
+    let all=[],from=0; const oc=t==='trainer_colors'?'name':'id';
+    while(true){ const {data,error}=await sb.from(t).select('*').order(oc,{ascending:true}).range(from,from+999);
+      if(error) throw new Error(t+': '+error.message);
+      all=all.concat(data||[]); if(!data||data.length<1000) break; from+=1000; }
+    out[t]=all;
+  }
+  return out;
+}
+// 스냅샷 1장 저장 + 30일 지난 것 정리. 실패해도 본 작업엔 영향 없음.
+async function snapshotNow(sb,label){
+  try{
+    const tables=await dumpAllTables(sb);
+    const size_kb=Math.round(JSON.stringify(tables).length/1024);
+    const {error}=await sb.from('crm_snapshots').insert({label,size_kb,tables});
+    if(error) throw error;
+    const cut=new Date(Date.now()-30*86400000).toISOString();
+    await sb.from('crm_snapshots').delete().lt('taken_at',cut);
+    return true;
+  }catch(e){ console.warn('snapshot 실패:',e.message||e); return false; }
+}
+// 하루 1회만: 그날 첫 접속 시 자동 백업
+async function maybeDailySnapshot(sb){
+  const key='gymlord_crm_snap_daily_'+ymd(new Date());
+  if(localStorage.getItem(key)) return;
+  localStorage.setItem(key,'1'); // 중복 방지 먼저 (여러 탭)
+  const ok=await snapshotNow(sb,'자동 일일');
+  if(!ok) localStorage.removeItem(key);
+}
+// 삭제 직전: 그날 첫 삭제 전 상태 1장 보존 (실수 삭제 복구용)
+async function maybeBeforeDeleteSnapshot(sb){
+  const key='gymlord_crm_snap_del_'+ymd(new Date());
+  if(localStorage.getItem(key)) return;
+  localStorage.setItem(key,'1');
+  const ok=await snapshotNow(sb,'삭제 전');
+  if(!ok) localStorage.removeItem(key);
+}
+
 async function loadActiveTrainerNames(sb){
   const [ms,ls,tc]=await Promise.all([
     sb.from('memberships').select('trainer').eq('status','활성').not('trainer','is',null).limit(5000),
@@ -255,6 +297,7 @@ function EditMembershipModal({sb,ms,memberName,onClose,onSaved}){
   }
   async function del(){
     if(!confirm('이 회원권을 삭제할까요? (지난 수업 기록은 남고 차감 연결만 풀립니다)')) return;
+    await maybeBeforeDeleteSnapshot(sb);
     const {error}=await sb.from('memberships').delete().eq('id',ms.id);
     if(error){ setErr('삭제 실패: '+error.message); return; }
     logAct(sb,'회원권 삭제',who+ms.product_name);
@@ -399,6 +442,7 @@ function Detail({sb,member:m0,onClose}){
   async function delMember(){
     if(!confirm(`'${member.name}' 회원을 삭제할까요?\n\n· 보유 회원권도 함께 삭제됩니다\n· 수업/결제 기록은 남지만 회원 연결이 해제됩니다\n· 배정된 락커는 자동 회수됩니다\n\n이 작업은 되돌릴 수 없습니다.`)) return;
     await sb.from('lockers').update({member_id:null,status:'미배정',start_date:null,end_date:null,unlimited:false,password:null,memo:null}).eq('member_id',member.id);
+    await maybeBeforeDeleteSnapshot(sb);
     const {error}=await sb.from('members').delete().eq('id',member.id);
     if(error) return alert('삭제 실패: '+error.message);
     logAct(sb,'회원 삭제',member.name);
@@ -561,6 +605,7 @@ function EditPaymentModal({sb,member,payment,onClose,onSaved}){
   }
   async function del(){
     if(!confirm(`이 결제내역을 삭제할까요?\n${fmtDate(payment.paid_at)} · ${payment.method||'-'} · ${(payment.amount||0).toLocaleString()}원\n\n매출 집계에서도 빠집니다. 되돌릴 수 없습니다.`)) return;
+    await maybeBeforeDeleteSnapshot(sb);
     const {error}=await sb.from('payments').delete().eq('id',payment.id);
     if(error) return setErr('삭제 실패: '+error.message);
     logAct(sb,'결제내역 삭제',`${member.name} · ${fmtDate(payment.paid_at)} · ${(payment.amount||0).toLocaleString()}원`);
@@ -798,6 +843,7 @@ function MembersView({sb}){
     const names=(rows||[]).filter(r=>checked.has(r.id)).map(r=>r.name).slice(0,5).join(', ');
     if(!confirm(`${ids.length}명(${names}${ids.length>5?' 외':''})을 삭제할까요?\n\n· 보유 회원권도 함께 삭제됩니다\n· 수업/결제 기록은 남지만 회원 연결이 해제됩니다\n· 배정된 락커는 자동 회수됩니다\n\n이 작업은 되돌릴 수 없습니다.`)) return;
     await sb.from('lockers').update({member_id:null,status:'미배정',start_date:null,end_date:null,unlimited:false,password:null,memo:null}).in('member_id',ids);
+    await maybeBeforeDeleteSnapshot(sb);
     const {error}=await sb.from('members').delete().in('id',ids);
     if(error) return alert('삭제 실패: '+error.message);
     logAct(sb,'회원 삭제',`${ids.length}명: ${names}${ids.length>5?' 외':''}`);
@@ -2144,6 +2190,69 @@ function ProductModal({sb,product,onClose,onSaved}){
 }
 
 // ---------- 로그 기록 ----------
+// ---------- 자동 백업 · 복원 패널 ----------
+function SnapshotPanel({sb}){
+  const [snaps,setSnaps]=useState(null);
+  const [busy,setBusy]=useState('');
+  const [open,setOpen]=useState(false);
+  async function load(){
+    const {data}=await sb.from('crm_snapshots').select('id,taken_at,label,size_kb').order('taken_at',{ascending:false});
+    setSnaps(data||[]);
+  }
+  useEffect(()=>{ if(open&&snaps===null) load(); },[open]);
+  const fmt=s=>{ const d=new Date(s); return isNaN(d)?'-':`${d.getMonth()+1}.${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  async function backupNow(){
+    setBusy('backup');
+    const ok=await snapshotNow(sb,'수동');
+    setBusy(''); if(ok){ await load(); } else alert('백업 실패 — 잠시 후 다시 시도하세요.');
+  }
+  async function download(id){
+    setBusy('dl'+id);
+    const {data,error}=await sb.from('crm_snapshots').select('taken_at,tables').eq('id',id).single();
+    setBusy('');
+    if(error||!data){ alert('불러오기 실패'); return; }
+    const blob=new Blob([JSON.stringify({exported_at:data.taken_at,app:'GYMLORD CRM',tables:data.tables})],{type:'application/json'});
+    const u=URL.createObjectURL(blob),a=document.createElement('a');
+    a.href=u; a.download=`gymlord_백업_${ymd(new Date(data.taken_at))}.json`; a.click(); URL.revokeObjectURL(u);
+  }
+  async function restore(s){
+    if(!confirm(`⚠️ ${fmt(s.taken_at)} (${s.label||'-'}) 시점으로 되돌립니다.\n\n· 지금의 회원·회원권·수업·결제·락커·상품 데이터가 이 시점 상태로 전부 교체됩니다.\n· 이후 추가·수정한 내용은 사라집니다.\n· (복원 직전 현재 상태는 자동으로 한 장 백업됩니다.)\n\n계속할까요?`)) return;
+    if(!confirm('정말 복원할까요? 이 작업은 전체 데이터를 교체합니다.')) return;
+    setBusy('rs'+s.id);
+    await snapshotNow(sb,'복원 전');            // 되돌리기용 안전망
+    const {data,error}=await sb.rpc('restore_crm_snapshot',{p_id:s.id});
+    setBusy('');
+    if(error){ alert('복원 실패: '+error.message); return; }
+    logAct(sb,'스냅샷 복원',`${fmt(s.taken_at)} (${s.label||'-'})`);
+    alert('복원 완료: '+(data||'')+'\n화면을 새로고침합니다.');
+    location.reload();
+  }
+  return (<div className="mp-cardbox" style={{marginBottom:16}}>
+    <h3 style={{cursor:'pointer'}} onClick={()=>setOpen(o=>!o)}>
+      <span>🛡 자동 백업 · 복원</span>
+      <span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{open?'▲':'▼'} {snaps?`${snaps.length}장`:''}</span>
+    </h3>
+    {open && <>
+      <p className="muted" style={{fontSize:12.5,margin:'0 0 10px'}}>매일 첫 접속 시, 그리고 삭제 직전에 전체 데이터가 자동 저장됩니다(30일 보관). 사고 시 아래에서 되돌리거나 파일로 내려받을 수 있어요.</p>
+      <button className="btn ghost sm" disabled={!!busy} onClick={backupNow} style={{marginBottom:12}}>{busy==='backup'?'백업 중...':'+ 지금 백업'}</button>
+      {snaps===null? <div className="muted">불러오는 중...</div> :
+       snaps.length===0? <div className="muted">아직 백업이 없습니다. 접속만 해도 하루 1장 자동 생성됩니다.</div> :
+       <div className="list">
+         <div className="row snaprow head"><div>시각</div><div>종류</div><div>크기</div><div>작업</div></div>
+         {snaps.map(s=>(<div className="row snaprow" key={s.id} style={{cursor:'default'}}>
+           <div className="muted" style={{fontSize:13}}>{fmt(s.taken_at)}</div>
+           <div><span className={'logtag'+(s.label==='삭제 전'?' danger':s.label==='복원 전'?'':' ok')}>{s.label||'-'}</span></div>
+           <div className="muted" style={{fontSize:13}}>{s.size_kb?s.size_kb+'KB':'-'}</div>
+           <div style={{display:'flex',gap:6}}>
+             <button className="btn ghost sm" disabled={!!busy} onClick={()=>download(s.id)}>{busy==='dl'+s.id?'...':'⤓'}</button>
+             <button className="btn ghost sm" style={{color:'#e0a23c',borderColor:'#5a4a28'}} disabled={!!busy} onClick={()=>restore(s)}>{busy==='rs'+s.id?'복원 중...':'↺ 복원'}</button>
+           </div>
+         </div>))}
+       </div>}
+    </>}
+  </div>);
+}
+
 function LogsView({sb}){
   const [rows,setRows]=useState(null);
   const [q,setQ]=useState('');
@@ -2178,6 +2287,7 @@ function LogsView({sb}){
     return q.toLowerCase().split(/\s+/).every(w=>s.includes(w));
   });
   return (<div>
+    <SnapshotPanel sb={sb}/>
     <div className="bar" style={{marginTop:18}}>
       <input className="search" placeholder="로그 검색 — 예: 강수빈 / 삭제 / 락커 / 미수금" value={q} onChange={e=>setQ(e.target.value)}/>
       <button className="btn ghost sm" onClick={load}>새로고침</button>
@@ -2216,6 +2326,7 @@ function App(){
   const [authed,setAuthed]=useState(null);
   const [view,setView]=useState('home');
   useEffect(()=>{ if(!sb)return; sb.auth.getSession().then(({data})=>setAuthed(!!data.session)); },[]);
+  useEffect(()=>{ if(authed && sb) maybeDailySnapshot(sb); },[authed]);
   async function logout(){ await sb.auth.signOut(); setAuthed(false); }
   if(!sb) return <Setup onDone={()=>location.reload()}/>;
   if(authed===null) return <div className="center"><div className="muted">불러오는 중...</div></div>;
