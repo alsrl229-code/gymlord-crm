@@ -954,6 +954,7 @@ function AddMemberModal({sb,onClose,onSaved}){
 // ---------- 예약 모달 ----------
 function BookingModal({sb,date,members,trainers,onClose,onSaved}){
   useEsc(onClose);
+  const [dt,setDt]=useState(date); // 예약 날짜 (모달 내 변경 가능)
   const [mode,setMode]=useState('member'); // member | guest
   const [q,setQ]=useState(''),[sel,setSel]=useState(null);
   const [start,setStart]=useState('10:00'),[dur,setDur]=useState('50'),[trainer,setTrainer]=useState('');
@@ -970,17 +971,17 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
     setMss(list); setMsId(list[0]? list[0].id : null);
     setTrainer(list[0]?String(list[0].trainer||'').trim():'');
   }
-  function times(){ const startISO=new Date(`${date}T${start}:00+09:00`); const endISO=new Date(startISO.getTime()+(parseInt(dur)||50)*60000); return [startISO.toISOString(), endISO.toISOString()]; }
+  function times(){ const startISO=new Date(`${dt}T${start}:00+09:00`); const endISO=new Date(startISO.getTime()+(parseInt(dur)||50)*60000); return [startISO.toISOString(), endISO.toISOString()]; }
   async function conflictOK(s,e){
     if(!trainer) return true;
-    const d0=new Date(`${date}T00:00:00+09:00`).toISOString(), d1=new Date(`${date}T23:59:59+09:00`).toISOString();
+    const d0=new Date(`${dt}T00:00:00+09:00`).toISOString(), d1=new Date(`${dt}T23:59:59+09:00`).toISOString();
     const {data}=await sb.from('lessons').select('start_at,end_at,lesson_name,member_id').eq('trainer',trainer).eq('status','예약').gte('start_at',d0).lte('start_at',d1);
     const c=(data||[]).find(l=> l.start_at < e && (l.end_at||l.start_at) > s);
     if(c) return confirm(`⚠️ ${trainer} 강사가 ${hm(c.start_at)}에 이미 예약이 있습니다 (${c.lesson_name}).\n그래도 예약을 진행할까요?`);
     return true;
   }
   const [repeat,setRepeat]=useState('1'); // 매주 같은 요일/시간 반복 횟수
-  function nthDate(i){ const d=new Date(`${date}T00:00:00+09:00`); d.setDate(d.getDate()+7*i); return ymd(d); }
+  function nthDate(i){ const d=new Date(`${dt}T00:00:00+09:00`); d.setDate(d.getDate()+7*i); return ymd(d); }
   async function saveMember(){
     if(!sel) return setErr('회원을 선택하세요');
     const n=Math.max(1,Math.min(20,parseInt(repeat)||1));
@@ -995,7 +996,7 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
     setBusy(true);
     // 전체 기간 충돌 일괄 확인 (강사 지정 시)
     if(fixedTrainer){
-      const d0=new Date(`${date}T00:00:00+09:00`).toISOString();
+      const d0=new Date(`${dt}T00:00:00+09:00`).toISOString();
       const dEnd=new Date(`${nthDate(n-1)}T23:59:59+09:00`).toISOString();
       const {data:exist}=await sb.from('lessons').select('start_at,end_at,lesson_name').eq('trainer',fixedTrainer).eq('status','예약').gte('start_at',d0).lte('start_at',dEnd);
       const clashes=[];
@@ -1009,7 +1010,7 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
     const {error}=await sb.from('lessons').insert(rows);
     if(error){ setBusy(false); return setErr('저장 실패: '+error.message); }
     if(msId) for(let i=0;i<n;i++) await sb.rpc('consume_specific',{p_membership_id:msId}); // 예약 즉시 차감 × n
-    logAct(sb,'수업 예약',`${sel.name} · ${name} · ${date} ${start}${n>1?` (매주 ×${n}회, ~${nthDate(n-1)})`:''}`);
+    logAct(sb,'수업 예약',`${sel.name} · ${name} · ${dt} ${start}${n>1?` (매주 ×${n}회, ~${nthDate(n-1)})`:''}`);
     setBusy(false); onSaved();
   }
   async function saveGuest(){
@@ -1018,12 +1019,13 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
     const ln = guestName.trim()? `${name} - ${guestName.trim()}` : name;
     const {error}=await sb.from('lessons').insert({member_id:null, membership_id:null, start_at:s, end_at:e, lesson_name:ln, trainer:trainer||null, status:'예약'});
     setBusy(false); if(error){ setErr('저장 실패: '+error.message); return; }
-    logAct(sb,'수업 예약(비회원)',`${ln} · ${date} ${start}`);
+    logAct(sb,'수업 예약(비회원)',`${ln} · ${dt} ${start}`);
     onSaved();
   }
   return (
     <div className="modal-ov" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}>
-      <div className="mhead"><h3>수업 예약 · {date}</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+      <div className="mhead"><h3>수업 예약 · {dt}</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+      <div className="field"><label>날짜</label><input type="date" value={dt} onChange={e=>setDt(e.target.value||dt)}/></div>
       <div className="seg" style={{marginBottom:12}}>
         <button type="button" className={mode==='member'?'on':''} onClick={()=>setMode('member')}>회원 수업</button>
         <button type="button" className={mode==='guest'?'on':''} onClick={()=>setMode('guest')}>비회원 (OT·상담)</button>
@@ -1060,7 +1062,7 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
               {Array.from({length:20},(_,i)=>i+1).map(n=><option key={n} value={n}>{n===1?'1회 (반복없음)':`매주 ×${n}회`}</option>)}
             </select></div>
         </div>
-        {parseInt(repeat)>1 && <p className="muted" style={{fontSize:12,margin:'-4px 0 10px'}}>{date}부터 매주 같은 요일 {start}에 {repeat}회 예약됩니다 (마지막 {nthDate(parseInt(repeat)-1)}){msId?' · 잔여횟수도 '+repeat+'회 차감':''}.</p>}
+        {parseInt(repeat)>1 && <p className="muted" style={{fontSize:12,margin:'-4px 0 10px'}}>{dt}부터 매주 같은 요일 {start}에 {repeat}회 예약됩니다 (마지막 {nthDate(parseInt(repeat)-1)}){msId?' · 잔여횟수도 '+repeat+'회 차감':''}.</p>}
         <button className="btn" disabled={busy||!selectedMs||!assignedTrainer} onClick={saveMember}>{busy?'저장 중...':parseInt(repeat)>1?`${repeat}회 일괄 예약`:'예약 저장'}</button>
       </>) : <>
         <div className="field"><label>수업 종류</label>
@@ -1481,6 +1483,12 @@ function CalendarView({sb}){
   const goNext=()=>{ if(mode==='day'){ const d=new Date(anchor); d.setDate(d.getDate()+1); setAnchor(d); } else if(mode==='week'){ const d=new Date(anchor); d.setDate(d.getDate()+7); setAnchor(d); } else setCur(new Date(cur.getFullYear(),cur.getMonth()+1,1)); };
   const goToday=()=>{ setAnchor(new Date(today.getFullYear(),today.getMonth(),today.getDate())); setCur(new Date(today.getFullYear(),today.getMonth(),1)); };
   const weekEndD=weekDates[6];
+  // '＋ 일정 추가' 버튼 기본 날짜: 지금 보고 있는 화면 맥락에 맞춤(모달 안에서 변경 가능)
+  const bookingDate=()=>{
+    if(isMobile||mode==='day') return ymd(anchor);
+    if(mode==='week') return (today>=weekStart&&today<weekEnd)? todayKey : ymd(weekStart);
+    return (today.getFullYear()===cur.getFullYear()&&today.getMonth()===cur.getMonth())? todayKey : ymd(new Date(cur.getFullYear(),cur.getMonth(),1));
+  };
 
   return (<div onClick={()=>{ if(ctx)setCtx(null); if(picker)setPicker(false); }}>
     {!isMobile && <div className="cal-head">
@@ -1497,6 +1505,7 @@ function CalendarView({sb}){
         : <span className="mtitle-btn" style={{cursor:'default'}}>{anchor.getFullYear()}년 {anchor.getMonth()+1}/{anchor.getDate()} ({['일','월','화','수','목','금','토'][anchor.getDay()]}) · 강사별</span>}
       <button className="btn ghost sm" onClick={goNext}>›</button>
       <button className="btn ghost sm" onClick={goToday}>오늘</button>
+      <button className="btn sm" onClick={e=>{e.stopPropagation(); setBooking({date:bookingDate()});}}>＋ 일정 추가</button>
       <button className="btn ghost sm" onClick={e=>{e.stopPropagation();setImporter(true);}}>주간스케줄 가져오기</button>
       <div className="muted" style={{marginLeft:'auto',fontSize:13}}>날짜 클릭=예약 · 수업 우클릭=완료/휴강/노쇼</div>
       {picker && mode==='month' && <MonthPicker cur={cur} onPick={(y,m)=>{ setCur(new Date(y,m-1,1)); setPicker(false); }}/>}
@@ -1536,13 +1545,14 @@ function CalendarView({sb}){
         </div>
         <div className="ag-week">
           {weekDates.map((d,i)=>{ const k=ymd(d); const cnt=(byDate[k]||[]).length;
-            return (<button key={i} className={'ag-day'+(k===selKey?' sel':'')+(k===todayKey?' today':'')} onClick={()=>setAnchor(new Date(d))}>
+            return (<button key={i} className={'ag-day'+(k===selKey?' sel':'')+(k===todayKey?' today':'')}
+                onClick={()=>{ if(k===selKey) setBooking({date:k}); else setAnchor(new Date(d)); }}>
               <span className="ag-dow">{DOW[i]}</span>
               <span className="ag-num">{d.getDate()}</span>
               <span className={'ag-dot'+(cnt?' on':'')}/>
             </button>); })}
         </div>
-        <div className="ag-title">{anchor.getMonth()+1}월 {anchor.getDate()}일 ({DOW[anchor.getDay()]}) · 수업 {items.length}건 <span style={{opacity:.6}}>· 카드를 누르면 완료/노쇼 처리</span></div>
+        <div className="ag-title">{anchor.getMonth()+1}월 {anchor.getDate()}일 ({DOW[anchor.getDay()]}) · 수업 {items.length}건 <span style={{opacity:.6}}>· 카드=완료/노쇼 · 날짜 다시 탭=예약</span></div>
         {items.length===0? <div className="empty" style={{cursor:'pointer'}} onClick={()=>setBooking({date:selKey})}>이날 수업이 없습니다 · 아래 ＋ 버튼으로 예약</div> :
           items.map(l=>{ const tc=l.trainer?trainerColors[l.trainer]:'var(--line)';
             return (<button key={l.id} className={'ag-card'+(nextL&&l.id===nextL.id?' next':'')+(l.status!=='예약'?' st-'+l.status:'')}
