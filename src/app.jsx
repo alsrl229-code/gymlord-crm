@@ -1097,6 +1097,7 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
   const [allowNoMembership,setAllowNoMembership]=useState(false);
   const [skipConflicts,setSkipConflicts]=useState(true);
   const [result,setResult]=useState(null);
+  const [picks,setPicks]=useState({}); // 동명이인 수동 지정: {행idx: member_id}
 
   function statusBadge(status){
     const map={
@@ -1152,10 +1153,10 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
   function findMember(name){
     const exact=members.filter(m=>(m.name||'').trim()===name);
     if(exact.length===1) return {member:exact[0]};
-    if(exact.length>1) return {status:'ambiguous_member',message:'같은 이름의 회원이 2명 이상입니다.'};
+    if(exact.length>1) return {status:'ambiguous_member',message:'같은 이름의 회원이 2명 이상입니다.',candidates:exact};
     const compact=members.filter(m=>compactName(m.name)===compactName(name));
     if(compact.length===1) return {member:compact[0]};
-    if(compact.length>1) return {status:'ambiguous_member',message:'비슷한 이름의 회원이 2명 이상입니다.'};
+    if(compact.length>1) return {status:'ambiguous_member',message:'비슷한 이름의 회원이 2명 이상입니다.',candidates:compact};
     return {status:'missing_member',message:'CRM 회원 목록에서 찾지 못했습니다.'};
   }
 
@@ -1164,7 +1165,7 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
   }
   function normTrainer(v){ return String(v||'').trim(); }
 
-  async function buildItems(){
+  async function buildItems(picksArg=picks){
     setErr('');
     setResult(null);
     let payload;
@@ -1190,20 +1191,27 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
       const rowDuration=parseInt(row.brojDurationMinutes || row.durationMinutes || defaultDuration)||60;
       const time=buildTime(date,start,row.end || row.endTime,rowDuration);
       if(!memberName || !time) return {idx,row,status:'invalid',memberName,date,start,message:'회원명/날짜/시간 형식을 확인해주세요.'};
-      const match=findMember(memberName);
-      if(!match.member) return {idx,row,status:match.status,memberName,date,start,message:match.message};
-      return {
-        idx,row,status:'pending',member:match.member,memberName,date,start,
+      const forcedId=picksArg[idx];
+      const forced=forcedId? members.find(m=>String(m.id)===String(forcedId)) : null;
+      const match=forced? {member:forced} : findMember(memberName);
+      const base={
+        idx,row,memberName,date,start,
         startISO:time.startISO,endISO:time.endISO,startDate:time.start,endDate:time.end,
         lessonName:rowLesson || defaultLesson,
         trainer:rowTrainer || defaultTrainer,
-        duration:rowDuration,
-        message:'검사 중'
+        duration:rowDuration
       };
+      if(!match.member){
+        if(match.status==='ambiguous_member') return {...base,status:'ambiguous_member',candidates:match.candidates,message:match.message};
+        return {idx,row,status:match.status,memberName,date,start,message:match.message};
+      }
+      return {...base,status:'pending',member:match.member,manual:!!forced,message:'검사 중'};
     });
 
     const valid=prepared.filter(x=>x.status==='pending');
-    const memberIds=[...new Set(valid.map(x=>x.member.id))];
+    const ambiguous=prepared.filter(x=>x.status==='ambiguous_member');
+    const candIds=ambiguous.flatMap(x=>(x.candidates||[]).map(c=>c.id));
+    const memberIds=[...new Set([...valid.map(x=>x.member.id), ...candIds])];
     const msByMember={};
     if(memberIds.length){
       const {data,error}=await sb.from('memberships').select('id,member_id,product_name,remaining_count,total_count,end_date,trainer').in('member_id',memberIds).eq('status','활성').gt('remaining_count',0).order('end_date',{nullsFirst:false});
@@ -1212,9 +1220,10 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
     }
 
     let existing=[];
-    if(valid.length){
-      const min=new Date(Math.min(...valid.map(x=>x.startDate.getTime()))-4*60*60000);
-      const max=new Date(Math.max(...valid.map(x=>x.endDate.getTime()))+60000);
+    const timed=[...valid,...ambiguous];
+    if(timed.length){
+      const min=new Date(Math.min(...timed.map(x=>x.startDate.getTime()))-4*60*60000);
+      const max=new Date(Math.max(...timed.map(x=>x.endDate.getTime()))+60000);
       const {data,error}=await sb.from('lessons').select('id,member_id,start_at,end_at,lesson_name,trainer,status').gte('start_at',min.toISOString()).lte('start_at',max.toISOString());
       if(error){ setErr('기존 예약 조회 실패: '+error.message); return []; }
       existing=data||[];
@@ -1236,27 +1245,50 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
     }
 
     const checked=prepared.map(item=>{
-      if(item.status!=='pending') return item;
-      const dup=existing.find(l=>String(l.member_id)===String(item.member.id) && Math.abs(new Date(l.start_at).getTime()-item.startDate.getTime())<60000 && l.status!=='취소');
-      if(dup) return {...item,status:'duplicate',membership:null,message:'이미 같은 회원/시작시간 예약이 있습니다.'};
-      const conflict=existing.find(l=>l.trainer===item.trainer && l.status==='예약' && new Date(l.start_at)<item.endDate && new Date(l.end_at||l.start_at)>item.startDate);
-      if(conflict && skipConflicts) return {...item,status:'conflict',membership:null,message:`${item.trainer} ${hm(conflict.start_at)} 기존 예약과 겹칩니다.`};
-      const membership=takeMembership(item.member.id,item.trainer);
+      let it=item;
+      if(it.status==='ambiguous_member'){
+        // 동명이인 자동판별: 해당 강사 활성 회원권(잔여>0)을 가진 후보만 추림
+        const eligible=(it.candidates||[]).filter(c=>{
+          const list=msByMember[c.id]||[];
+          return list.some(ms=>normTrainer(ms.trainer)===normTrainer(it.trainer) && (remainingByMs[ms.id] ?? ms.remaining_count)>0);
+        });
+        if(eligible.length===1){
+          const member=members.find(m=>String(m.id)===String(eligible[0].id)) || eligible[0];
+          it={...it,status:'pending',member,memberName:member.name,autoResolved:true};
+        } else {
+          return {...it,membership:null,message:eligible.length>1
+            ? `조건 맞는 동명이인이 ${eligible.length}명 — 아래에서 회원을 선택하세요.`
+            : '동명이인 — 아래에서 회원을 선택하세요.'};
+        }
+      }
+      if(it.status!=='pending') return it;
+      const dup=existing.find(l=>String(l.member_id)===String(it.member.id) && Math.abs(new Date(l.start_at).getTime()-it.startDate.getTime())<60000 && l.status!=='취소');
+      if(dup) return {...it,status:'duplicate',membership:null,message:'이미 같은 회원/시작시간 예약이 있습니다.'};
+      const conflict=existing.find(l=>l.trainer===it.trainer && l.status==='예약' && new Date(l.start_at)<it.endDate && new Date(l.end_at||l.start_at)>it.startDate);
+      if(conflict && skipConflicts) return {...it,status:'conflict',membership:null,message:`${it.trainer} ${hm(conflict.start_at)} 기존 예약과 겹칩니다.`};
+      const membership=takeMembership(it.member.id,it.trainer);
       if(!membership){
-        const list=msByMember[item.member.id]||[];
-        const wanted=normTrainer(item.trainer);
+        const list=msByMember[it.member.id]||[];
+        const wanted=normTrainer(it.trainer);
         const hasSameTrainer=list.some(ms=>normTrainer(ms.trainer)===wanted);
         if(list.length && !hasSameTrainer){
           const names=[...new Set(list.map(ms=>normTrainer(ms.trainer)||'담당 미지정'))].join(', ');
-          return {...item,status:'trainer_mismatch',membership:null,message:`담당강사(${names}) 외 강사로는 등록할 수 없습니다.`};
+          return {...it,status:'trainer_mismatch',membership:null,message:`담당강사(${names}) 외 강사로는 등록할 수 없습니다.`};
         }
-        if(list.length) return {...item,status:'no_membership',membership:null,message:`${wanted||'선택 강사'} 담당 회원권 잔여횟수가 부족합니다.`};
-        if(!allowNoMembership) return {...item,status:'no_membership',membership:null,message:'차감 가능한 활성 회원권이 없습니다.'};
+        if(list.length) return {...it,status:'no_membership',membership:null,message:`${wanted||'선택 강사'} 담당 회원권 잔여횟수가 부족합니다.`};
+        if(!allowNoMembership) return {...it,status:'no_membership',membership:null,message:'차감 가능한 활성 회원권이 없습니다.'};
       }
-      return {...item,status:'ready',membership,message:membership?`${membership.product_name} 차감 예정`:'회원권 없이 예약만 등록'};
+      const tag=(it.autoResolved?` · 자동판별(${it.member.phone||'번호없음'})`:'')+(it.manual?` · 직접지정(${it.member.phone||'번호없음'})`:'');
+      return {...it,status:'ready',membership,message:(membership?`${membership.product_name} 차감 예정`:'회원권 없이 예약만 등록')+tag};
     });
     setItems(checked);
     return checked;
+  }
+
+  async function pickMember(idx,memberId){
+    const next={...picks,[idx]:memberId};
+    setPicks(next);
+    await buildItems(next);
   }
 
   async function registerReady(){
@@ -1306,7 +1338,7 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
       <div className="mhead"><h3>주간 스케줄 가져오기</h3><button className="xbtn" onClick={onClose}>✕</button></div>
       <p className="muted" style={{fontSize:13,marginTop:0}}>주간 스케줄 관리도구의 자동등록 JSON을 붙여넣으면 CRM 캘린더 예약으로 일괄 등록합니다.</p>
       <div className="field"><label>스케줄 JSON</label>
-        <textarea value={text} onChange={e=>{setText(e.target.value);setItems([]);setResult(null);}}
+        <textarea value={text} onChange={e=>{setText(e.target.value);setItems([]);setResult(null);setPicks({});}}
           placeholder="브로제이 자동등록 요청 또는 rows JSON을 그대로 붙여넣기"
           style={{width:'100%',minHeight:150,background:'var(--forest)',border:'1px solid var(--line)',borderRadius:8,padding:'10px 12px',color:'var(--cream)',fontSize:12,fontFamily:'ui-monospace,SFMono-Regular,Menlo,monospace'}}/>
       </div>
@@ -1322,7 +1354,7 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
         <label style={{fontSize:13,color:'var(--muted)'}}><input type="checkbox" checked={allowNoMembership} onChange={e=>{setAllowNoMembership(e.target.checked);setItems([]);}}/> 활성 회원권 없어도 예약 등록</label>
       </div>
       <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
-        <button className="btn ghost sm" disabled={busy} onClick={buildItems}>검사</button>
+        <button className="btn ghost sm" disabled={busy} onClick={()=>buildItems()}>검사</button>
         <button className="btn" disabled={busy||readyCount===0} onClick={registerReady}>{busy?'등록 중...':`등록 가능 ${readyCount}건 저장`}</button>
         {items.length>0 && <span className="muted" style={{fontSize:13}}>전체 {items.length}건 · 등록완료 {registeredCount}건</span>}
       </div>
@@ -1334,7 +1366,16 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
           <tbody>{items.map(item=>(
             <tr key={item.idx}>
               <td>{statusBadge(item.status)}</td>
-              <td>{item.memberName||'-'}</td>
+              <td>
+                {item.memberName||'-'}
+                {item.status==='ambiguous_member' && item.candidates && (
+                  <select value={picks[item.idx]||''} onChange={e=>pickMember(item.idx,e.target.value)}
+                    style={{display:'block',marginTop:4,width:'100%',fontSize:12}}>
+                    <option value="">회원 선택…</option>
+                    {item.candidates.map(c=><option key={c.id} value={c.id}>{c.name} · {c.phone||'번호없음'}</option>)}
+                  </select>
+                )}
+              </td>
               <td>{item.date||'-'} {item.start||''}</td>
               <td>{item.lessonName||lessonName} · {item.trainer||trainer}</td>
               <td className="muted">{item.message}</td>
