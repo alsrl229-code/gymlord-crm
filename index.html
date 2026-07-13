@@ -403,10 +403,25 @@
   .lk-st.임박{background:rgba(224,162,60,.18);color:#e0a23c}
   .lk-st.만료{background:rgba(196,98,79,.18);color:#d98b7a}
   .lk-st.고장{background:rgba(217,164,79,.18);color:#d9a44f}
+  /* 직원 권한 */
+  .side-me{font-size:12px;color:var(--muted);padding:6px 4px 8px;line-height:1.35;border-top:1px solid var(--brassline);margin-top:6px}
+  .side-me small{display:block;color:var(--brass);font-weight:700;font-size:11px;margin-top:2px}
+  .stafflist{display:flex;flex-direction:column;gap:12px;margin-top:6px}
+  .staffcard{border:1px solid var(--brassline);border-radius:12px;padding:14px 16px;background:var(--forest2);box-shadow:0 1px 0 rgba(0,0,0,.15)}
+  .staffcard.off{opacity:.5}
+  .staffcard-head{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;margin-bottom:10px}
+  .staffcard-id b{font-size:15px}
+  .staffcard-id span{margin-left:8px;font-size:12px}
+  .staffcard-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+  .staffcard-actions select{padding:6px 9px;font-size:13px}
+  .chk{display:inline-flex;align-items:center;gap:5px;font-size:13px;color:var(--muted);cursor:pointer}
+  .permgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px}
+  .permchk{display:flex;align-items:center;gap:7px;font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:9px;cursor:pointer;color:var(--muted)}
+  .permchk.on{border-color:var(--brass);background:rgba(176,141,87,.1);color:var(--cream)}
 </style>
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=57"></script>
+<script src="app.bundle.js?v=58"></script>
 </body>
 </html>

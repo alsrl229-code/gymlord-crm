@@ -1,9 +1,21 @@
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useContext } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
 
 const LS = { url:'gl_sb_url', key:'gl_sb_key' };
+
+// ---------- 직원 권한 ----------
+// 프리랜서(trainer) 기능 접근을 마스터가 '권한' 탭에서 개별 제어. master는 전부 허용.
+const PERM_KEYS = ['members','delete_members','calendar','lockers','sales','products','logs','refund'];
+const PERM_LABELS = {
+  members:'회원 조회·수정', delete_members:'회원·회원권 삭제', calendar:'캘린더·수업 관리',
+  lockers:'락커', sales:'매출 보기', products:'상품 관리', logs:'로그·백업/복원', refund:'환불·미수금 수납',
+};
+const DEFAULT_TRAINER_PERMS = { members:true, calendar:true, lockers:true, delete_members:false, sales:false, products:false, logs:false, refund:false };
+const OWNER_EMAILS = ['alsrl229@gmail.com']; // 안전망: staff 행이 없거나 테이블 문제여도 항상 마스터
+const PermCtx = React.createContext({ role:'master', perms:{}, can:()=>true, email:'', name:'' });
+function usePerm(){ return useContext(PermCtx); }
 
 function getClient(){
   const url = localStorage.getItem(LS.url), key = localStorage.getItem(LS.key);
@@ -418,6 +430,7 @@ function EditMemberModal({sb,member,onClose,onSaved}){
 
 // ---------- 회원 상세 ----------
 function Detail({sb,member:m0,onClose}){
+  const {can}=usePerm();
   const [member,setMember]=useState(m0);
   const [ms,setMs]=useState(null),[ls,setLs]=useState(null),[pays,setPays]=useState(null),[myLockers,setMyLockers]=useState([]);
   const [reg,setReg]=useState(false),[editMs,setEditMs]=useState(null),[editMember,setEditMember]=useState(false);
@@ -490,7 +503,7 @@ function Detail({sb,member:m0,onClose}){
                 {myLockers.length? myLockers.map(l=>l.number+'번').join(', ') : '지정하기 +'}</b></div>
             {member.memo && <div className="kv"><span>메모</span><b>{member.memo}</b></div>}
           </div>
-          <button className="btn ghost danger sm" style={{width:'100%',marginTop:16}} onClick={delMember}>회원 삭제</button>
+          {can('delete_members') && <button className="btn ghost danger sm" style={{width:'100%',marginTop:16}} onClick={delMember}>회원 삭제</button>}
         </div>
         <div className="mp-grid">
           <div className="mp-cardbox">
@@ -521,7 +534,7 @@ function Detail({sb,member:m0,onClose}){
             {ls && lessonList.length>8 && <button className="link" style={{marginTop:4}} onClick={()=>setShowHistory(true)}>+ {lessonList.length-8}건 더보기</button>}
           </div>
           <div className="mp-cardbox">
-            <h3><span>결제 내역 {pays?`(${pays.length})`:''}</span>{unpaidTotal>0 && <button className="btn ghost sm" style={{color:'#d98b7a',borderColor:'#5a2e28'}} onClick={()=>setCollect(true)}>미수금 {unpaidTotal.toLocaleString()}원 수납</button>}</h3>
+            <h3><span>결제 내역 {pays?`(${pays.length})`:''}</span>{unpaidTotal>0 && can('refund') && <button className="btn ghost sm" style={{color:'#d98b7a',borderColor:'#5a2e28'}} onClick={()=>setCollect(true)}>미수금 {unpaidTotal.toLocaleString()}원 수납</button>}</h3>
             {pays===null? <div className="muted">불러오는 중...</div> :
               pays.length===0? <div className="muted">결제 내역이 없습니다</div> :
               <table className="ptable"><thead><tr><th>거래일시</th><th>구분</th><th style={{textAlign:'right'}}>금액</th><th style={{width:50}}></th></tr></thead>
@@ -531,7 +544,7 @@ function Detail({sb,member:m0,onClose}){
                   <td style={{textAlign:'right',color:p.amount<0?'#d98b7a':undefined}}>{(p.amount||0).toLocaleString()}원</td>
                   <td style={{textAlign:'right',whiteSpace:'nowrap'}}>
                     <button className="link" style={{margin:0,fontSize:12}} onClick={()=>setEditPay(p)}>수정</button>
-                    {p.amount>0? <button className="link" style={{margin:'0 0 0 8px',fontSize:12}} onClick={()=>setRefund(p)}>환불</button> : null}</td>
+                    {p.amount>0 && can('refund')? <button className="link" style={{margin:'0 0 0 8px',fontSize:12}} onClick={()=>setRefund(p)}>환불</button> : null}</td>
                 </tr>))}</tbody></table>}
           </div>
           <div className="mp-cardbox">
@@ -794,6 +807,7 @@ function LessonHistoryModal({member,lessons,memberships,initialTab,onClose}){
 
 // ---------- 회원 목록 ----------
 function MembersView({sb}){
+  const {can}=usePerm();
   const [rows,setRows]=useState(null);
   const [q,setQ]=useState(''),[query,setQuery]=useState(''),[tab,setTab]=useState('전체');
   function doSearch(v){ setQuery((v??q).trim()); }
@@ -876,7 +890,7 @@ function MembersView({sb}){
       <button className="btn ghost sm" onClick={exportMembers}>⤓ 엑셀</button>
       <button className="btn" onClick={()=>setAdding(true)}>＋ 회원 추가</button>
     </div>
-    {checked.size>0 && <div className="selbar">
+    {checked.size>0 && can('delete_members') && <div className="selbar">
       <span className="cnt">{checked.size}명 선택됨</span>
       <button className="btn danger sm" onClick={delChecked}>삭제</button>
       <button className="xbtn" onClick={()=>setChecked(new Set())} title="선택 해제">✕</button>
@@ -1881,6 +1895,7 @@ function LockersView({sb}){
 
 // ---------- 홈 대시보드 ----------
 function DashboardView({sb}){
+  const {can}=usePerm();
   const [members,setMembers]=useState(null);
   const [ms,setMs]=useState([]);
   const [sel,setSel]=useState(null);
@@ -1931,7 +1946,7 @@ function DashboardView({sb}){
       <div className="stat"><div className="n">{counts.전체}</div><div className="l">전체 회원</div></div>
       <div className="stat"><div className="n" style={{color:'#7dc4a0'}}>{counts.활성}</div><div className="l">활성 회원</div></div>
       <div className="stat"><div className="n" style={{color:'var(--brass)'}}>{soon.length}</div><div className="l">만료 임박 (14일)</div></div>
-      <div className="stat"><div className="n" style={{color:unpaidTotal>0?'#d98b7a':'var(--muted)'}}>{unpaidTotal.toLocaleString()}<span style={{fontSize:14,fontWeight:600}}>원</span></div><div className="l">미수금 총액</div></div>
+      {can('sales') && <div className="stat"><div className="n" style={{color:unpaidTotal>0?'#d98b7a':'var(--muted)'}}>{unpaidTotal.toLocaleString()}<span style={{fontSize:14,fontWeight:600}}>원</span></div><div className="l">미수금 총액</div></div>}
     </div>
     <div className="dash-grid">
       <div className="mp-cardbox">
@@ -1942,14 +1957,14 @@ function DashboardView({sb}){
             <span className={'dday'+(d<=3?' expired':'')}>{d===0?'오늘 만료':'D-'+d}</span>
           </div>))}
       </div>
-      <div className="mp-cardbox">
+      {can('sales') && <div className="mp-cardbox">
         <h3><span>💰 미수금</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{unpaid.length}명 · {unpaidTotal.toLocaleString()}원</span></h3>
         {unpaid.length===0? <div className="muted">미수금이 없습니다</div> :
           unpaid.slice(0,15).map(m=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.member_id)}>
             <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name}</span></div>
             <span style={{color:'#d98b7a',fontWeight:700}}>{m.unpaid.toLocaleString()}원</span>
           </div>))}
-      </div>
+      </div>}
       <div className="mp-cardbox">
         <h3><span>🎂 오늘 생일</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{birthdays.length}명</span></h3>
         {birthdays.length===0? <div className="muted">오늘 생일인 회원이 없습니다</div> :
@@ -2360,6 +2375,111 @@ function LogsView({sb}){
   </div>);
 }
 
+// ---------- 직원 권한 관리 (마스터 전용) ----------
+function StaffAdmin({sb}){
+  const {email:myEmail}=usePerm();
+  const [rows,setRows]=useState(null);
+  const [err,setErr]=useState('');
+  const [adding,setAdding]=useState(false);
+  async function load(){
+    const {data,error}=await sb.from('staff').select('*').order('role').order('name');
+    if(error){ setErr('직원 목록 조회 실패: '+error.message); setRows([]); return; }
+    setErr(''); setRows(data||[]);
+  }
+  useEffect(()=>{ load(); },[]);
+
+  async function patch(row, changes, logMsg){
+    const {error}=await sb.from('staff').update(changes).eq('id',row.id);
+    if(error){ setErr('저장 실패: '+error.message); return; }
+    logAct(sb,'권한 변경',`${row.name||row.email} · ${logMsg}`);
+    setRows(rs=>rs.map(r=>r.id===row.id?{...r,...changes}:r));
+  }
+  function togglePerm(row,key,val){ patch(row,{perms:{...(row.perms||{}),[key]:val}}, `${PERM_LABELS[key]} ${val?'허용':'제한'}`); }
+  function setRole(row,role){
+    if(row.email===myEmail && role!=='master' && !confirm('본인 계정을 프리랜서로 내리면 권한 탭 접근을 잃습니다. 계속할까요?')) return;
+    patch(row,{role}, `역할 ${role==='master'?'마스터':'프리랜서'}`);
+  }
+  async function removeRow(row){
+    if(!confirm(`${row.name||row.email} 직원 권한 행을 삭제할까요?\n※ Supabase 로그인 계정은 대시보드에서 별도 삭제해야 합니다.`)) return;
+    const {error}=await sb.from('staff').delete().eq('id',row.id);
+    if(error){ setErr('삭제 실패: '+error.message); return; }
+    logAct(sb,'권한 변경',`${row.name||row.email} · 직원 삭제`);
+    setRows(rs=>rs.filter(r=>r.id!==row.id));
+  }
+
+  return (
+    <div>
+      <div style={{display:'flex',alignItems:'center',justifyContent:'space-between',gap:10,flexWrap:'wrap',marginBottom:6}}>
+        <h2 style={{margin:0}}>직원 권한</h2>
+        <button className="btn sm" onClick={()=>setAdding(true)}>＋ 직원 추가</button>
+      </div>
+      <p className="muted" style={{marginTop:0,fontSize:13}}>마스터는 전 기능 접근. 프리랜서는 체크리스트로 기능별 접근을 허용/제한합니다. (로그인 계정·비밀번호는 Supabase 대시보드에서 생성, 여기선 권한만 관리)</p>
+      {err && <div className="err">{err}</div>}
+      {rows===null? <div className="empty">불러오는 중...</div> :
+       rows.length===0? <div className="empty">등록된 직원이 없습니다. staff 테이블 SQL을 먼저 실행하세요.</div> :
+       <div className="stafflist">
+         {rows.map(row=>(
+           <div key={row.id} className={'staffcard'+(row.active?'':' off')}>
+             <div className="staffcard-head">
+               <div className="staffcard-id"><b>{row.name||row.email.split('@')[0]}</b><span className="muted">{row.email}</span></div>
+               <div className="staffcard-actions">
+                 <select value={row.role} onChange={e=>setRole(row,e.target.value)}>
+                   <option value="master">마스터</option>
+                   <option value="trainer">프리랜서</option>
+                 </select>
+                 <label className="chk"><input type="checkbox" checked={row.active} onChange={e=>patch(row,{active:e.target.checked}, e.target.checked?'활성화':'비활성화')}/> 활성</label>
+                 <button className="link danger" onClick={()=>removeRow(row)}>삭제</button>
+               </div>
+             </div>
+             {row.role==='master'
+               ? <div className="muted" style={{fontSize:13}}>전체 권한 (모든 탭·기능)</div>
+               : <div className="permgrid">
+                   {PERM_KEYS.map(k=>(
+                     <label key={k} className={'permchk'+((row.perms&&row.perms[k])?' on':'')}>
+                       <input type="checkbox" checked={!!(row.perms&&row.perms[k])} onChange={e=>togglePerm(row,k,e.target.checked)}/>
+                       {PERM_LABELS[k]}
+                     </label>))}
+                 </div>}
+           </div>))}
+       </div>}
+      {adding && <StaffAddModal sb={sb} onClose={()=>setAdding(false)} onSaved={()=>{setAdding(false);load();}}/>}
+    </div>
+  );
+}
+
+// 직원 권한 행 추가 (로그인 계정은 대시보드에서 별도 생성)
+function StaffAddModal({sb,onClose,onSaved}){
+  useEsc(onClose);
+  const [email,setEmail]=useState(''),[name,setName]=useState(''),[role,setRole]=useState('trainer');
+  const [busy,setBusy]=useState(false),[err,setErr]=useState('');
+  async function save(){
+    const em=email.trim().toLowerCase();
+    if(!em){ setErr('이메일을 입력하세요 (Supabase 로그인 계정과 동일하게).'); return; }
+    setBusy(true);
+    const perms = role==='trainer'? DEFAULT_TRAINER_PERMS : {};
+    const {error}=await sb.from('staff').insert({email:em,name:name.trim()||null,role,perms,active:true});
+    setBusy(false);
+    if(error){ setErr('저장 실패: '+error.message); return; }
+    logAct(sb,'권한 변경',`${name.trim()||em} · 직원 추가(${role==='master'?'마스터':'프리랜서'})`);
+    onSaved();
+  }
+  return (
+    <div className="modal-ov" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}>
+      <div className="mhead"><h3>직원 추가</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+      <p className="muted" style={{fontSize:12,marginTop:0}}>Supabase 대시보드에서 만든 로그인 계정의 <b>이메일과 동일</b>하게 입력하세요. 여기서는 권한만 등록됩니다.</p>
+      <div className="field"><label>이메일</label><input autoFocus value={email} onChange={e=>setEmail(e.target.value)} placeholder="예: kyurin@gymlord.kr"/></div>
+      <div className="field"><label>표시명</label><input value={name} onChange={e=>setName(e.target.value)} placeholder="예: 김규린"/></div>
+      <div className="field"><label>역할</label>
+        <div className="seg">
+          <button type="button" className={role==='trainer'?'on':''} onClick={()=>setRole('trainer')}>프리랜서</button>
+          <button type="button" className={role==='master'?'on':''} onClick={()=>setRole('master')}>마스터</button>
+        </div></div>
+      <button className="btn" disabled={busy} onClick={save}>{busy?'저장 중...':'추가'}</button>
+      <div className="err">{err}</div>
+    </div></div>
+  );
+}
+
 // ---------- App ----------
 // 네비 라인 아이콘 (currentColor 상속 → 활성시 브라스)
 const _ni={viewBox:'0 0 24 24',width:19,height:19,fill:'none',stroke:'currentColor',strokeWidth:1.6,strokeLinecap:'round',strokeLinejoin:'round'};
@@ -2371,38 +2491,60 @@ const NAV_ICONS={
   sales:(<svg {..._ni}><rect x="2.8" y="6.4" width="18.4" height="11.2" rx="1.8"/><circle cx="12" cy="12" r="2.6"/><path d="M6.1 12h.01M17.9 12h.01"/></svg>),
   products:(<svg {..._ni}><path d="M11.9 3.5H5.7A2.2 2.2 0 0 0 3.5 5.7v6.2c0 .58.23 1.14.64 1.55l7.4 7.4a2.2 2.2 0 0 0 3.1 0l6.2-6.2a2.2 2.2 0 0 0 0-3.1l-7.4-7.4a2.2 2.2 0 0 0-1.54-.65Z"/><circle cx="8.2" cy="8.2" r="1.25"/></svg>),
   logs:(<svg {..._ni}><rect x="4.6" y="4" width="14.8" height="17" rx="2"/><path d="M8.6 9.2h6.8M8.6 13h6.8M8.6 16.8h4.2"/></svg>),
+  staff:(<svg {..._ni}><path d="M12 3.2l6.5 2.4v5.1c0 4.1-2.7 7.2-6.5 8.3-3.8-1.1-6.5-4.2-6.5-8.3V5.6L12 3.2Z"/><path d="M9.3 11.7l1.9 1.9 3.5-3.7"/></svg>),
 };
 function App(){
   const [sb]=useState(getClient);
   const [authed,setAuthed]=useState(null);
   const [view,setView]=useState('home');
+  const [me,setMe]=useState(null); // 내 staff 행 {role,perms,email,name}
   useEffect(()=>{ if(!sb)return; sb.auth.getSession().then(({data})=>setAuthed(!!data.session)); },[]);
   useEffect(()=>{ if(authed && sb) maybeDailySnapshot(sb); },[authed]);
-  async function logout(){ await sb.auth.signOut(); setAuthed(false); }
+  useEffect(()=>{
+    if(!authed || !sb){ setMe(null); return; }
+    (async()=>{
+      let email='';
+      try{ const {data}=await sb.auth.getUser(); email=(data&&data.user&&data.user.email)||''; }catch(e){}
+      if(OWNER_EMAILS.includes(email)){ setMe({role:'master',perms:{},email,name:'서민기'}); return; }
+      let row=null;
+      try{ const {data}=await sb.from('staff').select('*').eq('email',email).maybeSingle(); row=data; }catch(e){}
+      setMe(row || {role:'trainer',perms:DEFAULT_TRAINER_PERMS,email,name:email?email.split('@')[0]:''});
+    })();
+  },[authed]);
+  async function logout(){ await sb.auth.signOut(); setMe(null); setAuthed(false); }
   if(!sb) return <Setup onDone={()=>location.reload()}/>;
   if(authed===null) return <div className="center"><div className="muted">불러오는 중...</div></div>;
   if(!authed) return <Login sb={sb} onIn={()=>setAuthed(true)}/>;
-  const menu=[
-    ['home','홈'],
-    ['members','회원'],
-    ['calendar','캘린더'],
-    ['lockers','락커'],
-    ['sales','매출'],
-    ['products','상품'],
-    ['logs','로그'],
+  if(me===null) return <div className="center"><div className="muted">불러오는 중...</div></div>;
+  const isMaster = me.role==='master';
+  const can = (key)=> isMaster ? true : !!(me.perms && me.perms[key]);
+  const MENU=[
+    ['home','홈',null],
+    ['members','회원','members'],
+    ['calendar','캘린더','calendar'],
+    ['lockers','락커','lockers'],
+    ['sales','매출','sales'],
+    ['products','상품','products'],
+    ['logs','로그','logs'],
+    ['staff','권한','__master'],
   ];
+  const menu = MENU.filter(([k,l,perm])=> perm===null || (perm==='__master'? isMaster : can(perm)));
+  const allowed = new Set(menu.map(m=>m[0]));
+  const shownView = allowed.has(view) ? view : 'home';
   return (
+    <PermCtx.Provider value={{role:me.role, perms:me.perms||{}, can, email:me.email, name:me.name}}>
     <div className="shell">
       <aside className="side">
         <div className="logo">GYMLORD<small>MEMBER OS</small></div>
         <div className="side-orn"><Ornament width={96}/></div>
         <nav className="side-nav">
           {menu.map(([k,lbl])=>(
-            <button key={k} className={'nav-it'+(view===k?' on':'')} onClick={()=>setView(k)}>
+            <button key={k} className={'nav-it'+(shownView===k?' on':'')} onClick={()=>setView(k)}>
               <span className="nav-ic">{NAV_ICONS[k]}</span>{lbl}
             </button>))}
         </nav>
         <div className="side-spacer"/>
+        <div className="side-me">{me.name||me.email}<small>{isMaster?'마스터':'프리랜서'}</small></div>
         <button className="btn ghost sm" style={{width:'100%'}} onClick={logout}>로그아웃</button>
       </aside>
       <button className="mob-logout" onClick={logout} title="로그아웃" aria-label="로그아웃">
@@ -2412,14 +2554,16 @@ function App(){
         </svg>
       </button>
       <main className="main">
-        {view==='home'? <DashboardView sb={sb}/> :
-         view==='members'? <MembersView sb={sb}/> :
-         view==='calendar'? <CalendarView sb={sb}/> :
-         view==='lockers'? <LockersView sb={sb}/> :
-         view==='sales'? <SalesView sb={sb}/> :
-         view==='products'? <ProductsView sb={sb}/> : <LogsView sb={sb}/>}
+        {shownView==='home'? <DashboardView sb={sb}/> :
+         shownView==='members'? <MembersView sb={sb}/> :
+         shownView==='calendar'? <CalendarView sb={sb}/> :
+         shownView==='lockers'? <LockersView sb={sb}/> :
+         shownView==='sales'? <SalesView sb={sb}/> :
+         shownView==='products'? <ProductsView sb={sb}/> :
+         shownView==='staff'? <StaffAdmin sb={sb}/> : <LogsView sb={sb}/>}
       </main>
     </div>
+    </PermCtx.Provider>
   );
 }
 
