@@ -430,8 +430,9 @@ function EditMemberModal({sb,member,onClose,onSaved}){
 
 // ---------- 회원 상세 ----------
 function Detail({sb,member:m0,onClose}){
-  const {can}=usePerm();
+  const {can,role}=usePerm();
   const [member,setMember]=useState(m0);
+  const [trainerOpts,setTrainerOpts]=useState([]);
   const [ms,setMs]=useState(null),[ls,setLs]=useState(null),[pays,setPays]=useState(null),[myLockers,setMyLockers]=useState([]);
   const [reg,setReg]=useState(false),[editMs,setEditMs]=useState(null),[editMember,setEditMember]=useState(false);
   const [lessonTab,setLessonTab]=useState('upcoming');
@@ -462,7 +463,12 @@ function Detail({sb,member:m0,onClose}){
     onClose();
   }
   async function reloadMember(){ const {data}=await sb.from('members').select('*').eq('id',member.id).single(); if(data) setMember(data); }
+  async function assignTrainer(v){ await sb.from('members').update({assigned_trainer:v||null}).eq('id',member.id); logAct(sb,'담당 변경',`${member.name} → ${v||'미배정'}`); reloadMember(); }
   useEffect(()=>{ reload(); },[member.id]);
+  useEffect(()=>{ if(role!=='master') return;
+    sb.from('memberships').select('trainer').not('trainer','is',null).limit(5000).then(({data})=>{
+      setTrainerOpts([...new Set((data||[]).map(r=>String(r.trainer).trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ko'))); });
+  },[role]);
   const nowISO=new Date().toISOString();
   const upcoming=(ls||[]).filter(l=>l.status==='예약'&&l.start_at>=nowISO).slice().sort((a,b)=>a.start_at<b.start_at?-1:1);
   const past=(ls||[]).filter(l=>!(l.status==='예약'&&l.start_at>=nowISO));
@@ -498,6 +504,16 @@ function Detail({sb,member:m0,onClose}){
             <div className="kv"><span>등록일</span><b>{fmtDate(member.reg_date)}{daysSince!=null?` · ${daysSince}일`:''}</b></div>
             <div className="kv"><span>누적결제</span><b>{(member.cumulative_payment||0).toLocaleString()}원</b></div>
             <div className="kv"><span>상담담당</span><b>{member.manager||'-'}</b></div>
+            <div className="kv"><span>담당 선생님</span>
+              {role==='master'
+                ? <select value={member.assigned_trainer||''} onChange={e=>assignTrainer(e.target.value)}
+                    style={{background:'var(--forest)',border:'1px solid var(--line)',borderRadius:8,padding:'5px 8px',color:'var(--cream)',fontSize:13,cursor:'pointer',maxWidth:130}}>
+                    <option value="">(미배정)</option>
+                    {trainerOpts.map(t=><option key={t} value={t}>{t}</option>)}
+                    {member.assigned_trainer && !trainerOpts.includes(member.assigned_trainer) && <option value={member.assigned_trainer}>{member.assigned_trainer}</option>}
+                  </select>
+                : <b>{member.assigned_trainer||'-'}</b>}
+            </div>
             <div className="kv"><span>락커</span>
               <b style={{cursor:'pointer',color:'var(--brass)',textDecoration:'underline'}} onClick={()=>setLockerPick(true)} title="클릭하여 락커 지정/변경">
                 {myLockers.length? myLockers.map(l=>l.number+'번').join(', ') : '지정하기 +'}</b></div>
@@ -922,6 +938,7 @@ function MembersView({sb}){
 // ---------- 신규 회원 등록 ----------
 function AddMemberModal({sb,onClose,onSaved}){
   useEsc(onClose);
+  const {role,name:myName}=usePerm();
   const [name,setName]=useState('');
   const [phone,setPhone]=useState('');
   const [gender,setGender]=useState('');
@@ -936,7 +953,8 @@ function AddMemberModal({sb,onClose,onSaved}){
     const {data,error}=await sb.from('members').insert({
       name:name.trim(), phone:phone.trim()||null, gender:gender||null, birth:birth||null,
       address:address.trim()||null, manager:manager.trim()||null, memo:memo.trim()||null,
-      status:'미등록', reg_date:ymd(new Date())
+      status:'미등록', reg_date:ymd(new Date()),
+      assigned_trainer: role==='master'? null : (myName||null)  // 프리랜서가 추가 시 자기 담당(RLS 유지)
     }).select().single();
     setBusy(false);
     if(error){ setErr('저장 실패: '+error.message); return; }
