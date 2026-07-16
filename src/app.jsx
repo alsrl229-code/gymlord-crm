@@ -429,7 +429,7 @@ function EditMemberModal({sb,member,onClose,onSaved}){
 }
 
 // ---------- 회원 상세 ----------
-function Detail({sb,member:m0,onClose}){
+function Detail({sb,member:m0,onClose,panel,panelTop}){
   const {can,role}=usePerm();
   const [member,setMember]=useState(m0);
   const [trainerOpts,setTrainerOpts]=useState([]);
@@ -482,7 +482,8 @@ function Detail({sb,member:m0,onClose}){
   const expiredCnt=(ms||[]).filter(m=>m.status!=='활성'&&m.status!=='홀딩').length;
   const unpaidTotal=(ms||[]).reduce((s,m)=>s+(m.unpaid||0),0);
   return createPortal((<>
-    <div className="mpage">
+    {panel && <div className="mpage-panel-ov" style={{top:panelTop}} onClick={onClose}/>}
+    <div className={'mpage'+(panel?' mpage-panel':'')} style={panel?{top:panelTop}:undefined}>
       <div className="mpage-top">
         <h2>{member.name} <span className={'badge b-'+(member.status||'')}>{member.status||'-'}</span></h2>
         <button className="mpage-close" onClick={onClose} title="닫기">✕</button>
@@ -1420,16 +1421,17 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
 }
 
 // ---------- 그날 전체보기 ----------
-function DayModal({date,items,memberName,chipStyle,onClose,onCtx}){
+function DayModal({date,items,memberName,chipStyle,onClose,onCtx,onMember}){
   useEsc(onClose);
   return (
     <div className="modal-ov" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}>
       <div className="mhead"><h3>{date} · 수업 {items.length}건</h3><button className="xbtn" onClick={onClose}>✕</button></div>
-      <p className="muted" style={{fontSize:12,marginTop:0}}>수업을 우클릭하면 완료/휴강/노쇼 처리할 수 있어요.</p>
+      <p className="muted" style={{fontSize:12,marginTop:0}}>회원 이름을 클릭하면 상세정보, 우클릭하면 완료/휴강/노쇼 처리할 수 있어요.</p>
       <div style={{display:'flex',flexDirection:'column',gap:6,maxHeight:'60vh',overflowY:'auto'}}>
         {items.length===0? <div className="muted">수업 없음</div> :
           items.map(l=>(
           <button key={l.id} className={'chip '+l.status} style={{...(chipStyle?chipStyle(l):null),fontSize:13,padding:'9px 11px'}}
+            onClick={()=>{ if(l.member_id && onMember) onMember(l); }}
             onContextMenu={e=>{e.preventDefault(); onCtx({x:e.clientX,y:e.clientY,l});}}>
             {hmRange(l)} · {l.member_id?memberName(l.member_id)+' · ':''}{l.lesson_name} <span className={'mini '+l.status}>{l.status}</span>
           </button>))}
@@ -1478,6 +1480,7 @@ function CalendarView({sb}){
   const [autoMsg,setAutoMsg]=useState('');
   const [picker,setPicker]=useState(false);
   const [dayView,setDayView]=useState(null);
+  const [memberDetail,setMemberDetail]=useState(null); // 칩 좌클릭 → 회원 상세(패널)
   const [mode,setMode]=useState('month');
   const [anchor,setAnchor]=useState(()=>new Date(today.getFullYear(),today.getMonth(),today.getDate()));
   // 모바일(≤860px) = 현장용 아젠다 뷰
@@ -1544,6 +1547,16 @@ function CalendarView({sb}){
     setCtx(null); setNoshow(null); loadLessons();
   }
   async function del(l){ if(!confirm('이 수업을 삭제할까요?')) return; if(l.status!=='휴강' && l.membership_id) await sb.rpc('restore_session',{p_membership_id:l.membership_id}); await sb.from('lessons').delete().eq('id',l.id); logAct(sb,'수업 삭제',`${l.member_id?memberName(l.member_id)+' · ':''}${l.lesson_name} · ${fmtDT(l.start_at)}`); setCtx(null); loadLessons(); }
+  // 수업 칩 좌클릭 → 회원 상세(요일 헤더 아래 패널). 우클릭은 상태메뉴 유지.
+  async function openMemberDetail(l,e){
+    if(!l||!l.member_id) return;
+    const {data}=await sb.from('members').select('*').eq('id',l.member_id).single();
+    if(!data) return; // RLS로 안 보이는 회원(배정 아님)
+    let top=176;
+    try{ const g=e&&e.currentTarget&&e.currentTarget.closest('.cal-grid'); const dow=g&&g.querySelector('.cal-dow');
+      if(dow) top=Math.round(dow.getBoundingClientRect().bottom+6); }catch(_){}
+    setMemberDetail({member:data,top});
+  }
 
   const first=new Date(cur.getFullYear(),cur.getMonth(),1);
   const gridStart=new Date(first); gridStart.setDate(1-first.getDay());
@@ -1580,7 +1593,7 @@ function CalendarView({sb}){
       <button className="btn ghost sm" onClick={goToday}>오늘</button>
       <button className="btn sm" onClick={e=>{e.stopPropagation(); setBooking({date:bookingDate()});}}>＋ 일정 추가</button>
       <button className="btn ghost sm" onClick={e=>{e.stopPropagation();setImporter(true);}}>주간스케줄 가져오기</button>
-      <div className="muted" style={{marginLeft:'auto',fontSize:13}}>날짜 클릭=예약 · 수업 우클릭=완료/휴강/노쇼</div>
+      <div className="muted" style={{marginLeft:'auto',fontSize:13}}>날짜 클릭=예약 · 회원 클릭=상세 · 수업 우클릭=완료/휴강/노쇼</div>
       {picker && mode==='month' && <MonthPicker cur={cur} onPick={(y,m)=>{ setCur(new Date(y,m-1,1)); setPicker(false); }}/>}
     </div>}
     {autoMsg && <div className="autobar">{autoMsg}</div>}
@@ -1650,6 +1663,7 @@ function CalendarView({sb}){
           <div className="cal-items" onClick={e=>e.stopPropagation()}>
             {(byT[t]||[]).map(l=>(
               <button key={l.id} className={'chip '+l.status} style={{...chipStyle(l),fontSize:12,padding:'5px 7px'}}
+                onClick={e=>{e.stopPropagation(); openMemberDetail(l,e);}}
                 onContextMenu={e=>{e.preventDefault();e.stopPropagation(); setCtx({x:e.clientX,y:e.clientY,l});}}>
                 {hmRange(l)} {l.member_id?memberName(l.member_id)+' ':''}{l.lesson_name}
               </button>))}
@@ -1665,6 +1679,7 @@ function CalendarView({sb}){
             {items.length===0? <div className="muted" style={{fontSize:11,padding:'2px 4px'}}>—</div> :
               items.map(l=>(
               <button key={l.id} className={'chip '+l.status} style={chipStyle(l)}
+                onClick={e=>{e.stopPropagation(); openMemberDetail(l,e);}}
                 onContextMenu={e=>{e.preventDefault();e.stopPropagation(); setCtx({x:e.clientX,y:e.clientY,l});}}>
                 {hmRange(l)} {l.member_id?memberName(l.member_id)+' ':''}{l.lesson_name}
               </button>))}
@@ -1681,6 +1696,7 @@ function CalendarView({sb}){
           <div className="cal-items" onClick={e=>e.stopPropagation()}>
             {items.map(l=>(
               <button key={l.id} className={'chip '+l.status} style={chipStyle(l)}
+                onClick={e=>{e.stopPropagation(); openMemberDetail(l,e);}}
                 onContextMenu={e=>{e.preventDefault();e.stopPropagation(); setCtx({x:e.clientX,y:e.clientY,l});}}>
                 {hmRange(l)} {l.member_id?memberName(l.member_id)+' ':''}{l.lesson_name}
               </button>))}
@@ -1705,7 +1721,9 @@ function CalendarView({sb}){
         onClose={()=>setImporter(false)} onSaved={()=>loadLessons()}/>}
     {noshow && <NoshowModal lesson={noshow} onClose={()=>setNoshow(null)} onConfirm={r=>setStatus(noshow,'노쇼',r)}/>}
     {dayView && <DayModal date={dayView.date} items={byDate[dayView.date]||[]} memberName={memberName} chipStyle={chipStyle}
-        onClose={()=>setDayView(null)} onCtx={c=>setCtx(c)}/>}
+        onClose={()=>setDayView(null)} onCtx={c=>setCtx(c)} onMember={l=>{ setDayView(null); openMemberDetail(l); }}/>}
+    {memberDetail && <Detail sb={sb} member={memberDetail.member} panel panelTop={memberDetail.top}
+        onClose={()=>{ setMemberDetail(null); loadLessons(); }}/>}
 
     {isMobile && sheet && createPortal(<>
       <div className="sheet-ov" onClick={()=>setSheet(null)}/>

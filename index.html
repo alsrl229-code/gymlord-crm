@@ -217,6 +217,10 @@
   .gauge>i{display:block;height:100%;background:var(--brass)}
   /* 회원 상세 페이지 (BroJ 스타일 풀페이지) */
   .mpage{position:fixed;top:0;right:0;bottom:0;left:210px;background:var(--forest);z-index:21;overflow-y:auto}
+  /* 캘린더 칩 좌클릭 → 회원 상세(요일 헤더 아래 큰 패널, 전체화면 아님) */
+  .mpage-panel{left:230px;right:16px;bottom:16px;border:1px solid var(--brassline);border-radius:16px;
+    box-shadow:0 30px 90px -24px rgba(0,0,0,.85);z-index:23}
+  .mpage-panel-ov{position:fixed;left:210px;right:0;bottom:0;z-index:22;background:rgba(0,0,0,.3)}
   .mpage-top{position:sticky;top:0;z-index:5;display:flex;align-items:center;justify-content:space-between;
     padding:14px 22px;background:var(--forest2);border-bottom:1px solid var(--line)}
   .mpage-top h2{margin:0;font-size:20px;display:flex;align-items:center;gap:8px}
@@ -422,6 +426,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=60"></script>
+<script src="app.bundle.js?v=61"></script>
 </body>
 </html>
