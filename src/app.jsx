@@ -399,11 +399,13 @@ function EditMemberModal({sb,member,onClose,onSaved}){
   const [gender,setGender]=useState(member.gender||'');
   const [address,setAddress]=useState(member.address||'');
   const [memo,setMemo]=useState(member.memo||'');
+  const [consentAt,setConsentAt]=useState(member.consent_at||null);
+  const [consentMkt,setConsentMkt]=useState(!!member.consent_marketing);
   const [busy,setBusy]=useState(false),[err,setErr]=useState('');
   async function save(){
     if(!name.trim()) return setErr('이름을 입력하세요');
     setBusy(true);
-    const {error}=await sb.from('members').update({name:name.trim(),phone:phone||null,birth:birth||null,gender:gender||null,address:address||null,memo:memo||null}).eq('id',member.id);
+    const {error}=await sb.from('members').update({name:name.trim(),phone:phone||null,birth:birth||null,gender:gender||null,address:address||null,memo:memo||null,consent_at:consentAt,consent_marketing:consentMkt}).eq('id',member.id);
     setBusy(false); if(error){ setErr('저장 실패: '+error.message); return; }
     logAct(sb,'회원정보 수정',name.trim());
     onSaved();
@@ -422,6 +424,10 @@ function EditMemberModal({sb,member,onClose,onSaved}){
       </div>
       <div className="field"><label>주소</label><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="주소"/></div>
       <div className="field"><label>메모</label><input value={memo} onChange={e=>setMemo(e.target.value)} placeholder="특이사항"/></div>
+      <div className="field"><label>개인정보 동의</label>
+        <label className="chk"><input type="checkbox" checked={!!consentAt} onChange={e=>setConsentAt(e.target.checked?(member.consent_at||new Date().toISOString()):null)}/> 개인정보 수집·이용 동의 (필수){consentAt && <span className="muted" style={{marginLeft:6,fontSize:12}}>· {fmtDate(consentAt)}</span>}</label>
+        <label className="chk" style={{marginTop:4}}><input type="checkbox" checked={consentMkt} onChange={e=>setConsentMkt(e.target.checked)}/> 마케팅 정보 수신 동의 (선택)</label>
+      </div>
       <button className="btn" disabled={busy} onClick={save}>{busy?'저장 중...':'저장'}</button>
       <div className="err">{err}</div>
     </div></div>
@@ -514,6 +520,11 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
                     {member.assigned_trainer && !trainerOpts.includes(member.assigned_trainer) && <option value={member.assigned_trainer}>{member.assigned_trainer}</option>}
                   </select>
                 : <b>{member.assigned_trainer||'-'}</b>}
+            </div>
+            <div className="kv"><span>개인정보 동의</span>
+              {member.consent_at
+                ? <b style={{color:'#7dc4a0'}}>동의 · {fmtDate(member.consent_at)}{member.consent_marketing?' · 마케팅':''}</b>
+                : <b style={{color:'#d98b7a'}}>미확보</b>}
             </div>
             <div className="kv"><span>락커</span>
               <b style={{cursor:'pointer',color:'var(--brass)',textDecoration:'underline'}} onClick={()=>setLockerPick(true)} title="클릭하여 락커 지정/변경">
@@ -847,11 +858,12 @@ function MembersView({sb}){
   // 임박/홀딩은 회원권 플래그 OR (브로제이 이전분) 회원 status 값으로 판정 — 이중집계 방지
   const isSoon=r=>((msFlags[r.id]&&msFlags[r.id].soon)||r.status==='임박');
   const isHold=r=>((msFlags[r.id]&&msFlags[r.id].hold)||r.status==='홀딩');
-  const counts = useMemo(()=>{ const c={전체:rows?rows.length:0,활성:0,임박:0,홀딩:0,만료:0,미등록:0};
-    (rows||[]).forEach(r=>{ if(['활성','만료','미등록'].includes(r.status))c[r.status]++; if(isSoon(r))c.임박++; if(isHold(r))c.홀딩++; }); return c; },[rows,msFlags]);
+  const counts = useMemo(()=>{ const c={전체:rows?rows.length:0,활성:0,임박:0,홀딩:0,만료:0,미등록:0,동의미확보:0};
+    (rows||[]).forEach(r=>{ if(['활성','만료','미등록'].includes(r.status))c[r.status]++; if(isSoon(r))c.임박++; if(isHold(r))c.홀딩++; if(!r.consent_at)c.동의미확보++; }); return c; },[rows,msFlags]);
   const filtered = (rows||[]).filter(r=>{
     if(tab==='임박'){ if(!isSoon(r)) return false; }
     else if(tab==='홀딩'){ if(!isHold(r)) return false; }
+    else if(tab==='동의미확보'){ if(r.consent_at) return false; }
     else if(tab!=='전체' && r.status!==tab) return false;
     if(query){ const nq=query.trim(); const d=query.replace(/\D/g,''); return (r.name||'').includes(nq)||(d&&(r.phone||'').replace(/\D/g,'').includes(d)); }
     return true;
@@ -889,8 +901,8 @@ function MembersView({sb}){
     </div>
     <div className="bar">
       <div className="tabs">
-        {['전체','활성','임박','홀딩','만료','미등록'].map(t=>(
-          <button key={t} className={'tab'+(tab===t?' on':'')} onClick={()=>setTab(t)}>{t} {counts[t]!==undefined?counts[t]:''}</button>
+        {['전체','활성','임박','홀딩','만료','미등록','동의미확보'].map(t=>(
+          <button key={t} className={'tab'+(tab===t?' on':'')} onClick={()=>setTab(t)}>{t==='동의미확보'?'동의 미확보':t} {counts[t]!==undefined?counts[t]:''}</button>
         ))}
       </div>
       <div className="searchbox">
@@ -947,6 +959,7 @@ function AddMemberModal({sb,onClose,onSaved}){
   const [address,setAddress]=useState('');
   const [manager,setManager]=useState('');
   const [memo,setMemo]=useState('');
+  const [consentPriv,setConsentPriv]=useState(false),[consentMkt,setConsentMkt]=useState(false);
   const [busy,setBusy]=useState(false),[err,setErr]=useState('');
   async function save(){
     if(!name.trim()) return setErr('이름을 입력하세요');
@@ -955,7 +968,8 @@ function AddMemberModal({sb,onClose,onSaved}){
       name:name.trim(), phone:phone.trim()||null, gender:gender||null, birth:birth||null,
       address:address.trim()||null, manager:manager.trim()||null, memo:memo.trim()||null,
       status:'미등록', reg_date:ymd(new Date()),
-      assigned_trainer: role==='master'? null : (myName||null)  // 프리랜서가 추가 시 자기 담당(RLS 유지)
+      assigned_trainer: role==='master'? null : (myName||null),  // 프리랜서가 추가 시 자기 담당(RLS 유지)
+      consent_at: consentPriv? new Date().toISOString() : null, consent_marketing: consentMkt
     }).select().single();
     setBusy(false);
     if(error){ setErr('저장 실패: '+error.message); return; }
@@ -977,6 +991,10 @@ function AddMemberModal({sb,onClose,onSaved}){
       <div className="field"><label>주소</label><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="주소"/></div>
       <div className="field"><label>상담 담당</label><input value={manager} onChange={e=>setManager(e.target.value)} placeholder="담당자 이름"/></div>
       <div className="field"><label>메모</label><input value={memo} onChange={e=>setMemo(e.target.value)} placeholder="특이사항"/></div>
+      <div className="field"><label>개인정보 동의</label>
+        <label className="chk"><input type="checkbox" checked={consentPriv} onChange={e=>setConsentPriv(e.target.checked)}/> 개인정보 수집·이용 동의 (필수)</label>
+        <label className="chk" style={{marginTop:4}}><input type="checkbox" checked={consentMkt} onChange={e=>setConsentMkt(e.target.checked)}/> 마케팅 정보 수신 동의 (선택)</label>
+      </div>
       {err && <div className="err">{err}</div>}
       <button className="btn" style={{width:'100%'}} disabled={busy} onClick={save}>{busy?'등록 중...':'회원 등록'}</button>
       <p className="muted" style={{fontSize:12,marginTop:8,marginBottom:0}}>등록 후 회원 상세에서 ＋레슨 등록으로 회원권을 추가하면 '활성'으로 전환됩니다.</p>
@@ -2516,6 +2534,55 @@ function StaffAddModal({sb,onClose,onSaved}){
   );
 }
 
+// ---------- 개인정보 처리방침 ----------
+const PRIVACY_POLICY = `짐로드(이하 "센터")는 「개인정보 보호법」에 따라 회원의 개인정보를 보호하고 관련 고충을 신속히 처리하기 위해 다음과 같이 개인정보 처리방침을 둡니다.
+
+1. 수집하는 개인정보 항목
+ · 필수: 이름, 연락처(휴대전화)
+ · 선택: 성별, 생년월일, 주소, 결제·회원권 이용내역
+
+2. 개인정보의 수집·이용 목적
+ · 회원 관리 및 본인 확인
+ · 회원권·PT 이용 등록 및 이용내역 관리
+ · 요금 결제·정산 및 미수금 관리
+ · 만료·예약 등 이용 관련 안내(선택 동의 시 마케팅 정보 제공)
+
+3. 개인정보의 보유·이용 기간
+ · 회원 탈퇴 또는 수집·이용 목적 달성 시 지체 없이 파기합니다.
+ · 다만 「전자상거래 등에서의 소비자보호에 관한 법률」에 따라 다음의 기록은 보관합니다.
+   - 계약·청약철회, 대금결제 및 재화 등의 공급에 관한 기록: 5년
+
+4. 개인정보의 파기 절차 및 방법
+ · 전자적 파일: 복구가 불가능한 방법으로 영구 삭제
+ · 종이 문서: 분쇄 또는 소각
+ · 보유기간 경과 또는 정보주체의 동의 철회 시 지체 없이 파기합니다.
+
+5. 정보주체의 권리
+ · 회원은 언제든지 본인의 개인정보에 대한 열람·정정·삭제·처리정지를 요청할 수 있습니다.
+ · 요청은 아래 문의처로 하실 수 있습니다.
+
+6. 개인정보 제3자 제공
+ · 센터는 회원의 개인정보를 외부에 제공하지 않습니다.
+   (결제 처리 등 불가피한 경우 해당 업무 범위 내에서만 처리합니다)
+
+7. 개인정보 보호책임자 및 문의처
+ · 상호: 짐로드
+ · 대표자: 서민기
+ · 소재지: 서울 강남구 청담동 32-5
+ · 문의: alsrl229@naver.com
+
+시행일: 2026-07-14`;
+
+function PrivacyModal({onClose}){
+  useEsc(onClose);
+  return (
+    <div className="modal-ov" onClick={onClose}><div className="modal" style={{maxWidth:640}} onClick={e=>e.stopPropagation()}>
+      <div className="mhead"><h3>개인정보 처리방침</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+      <div style={{maxHeight:'70vh',overflowY:'auto',whiteSpace:'pre-wrap',fontSize:13,lineHeight:1.75,color:'var(--cream)'}}>{PRIVACY_POLICY}</div>
+    </div></div>
+  );
+}
+
 // ---------- App ----------
 // 네비 라인 아이콘 (currentColor 상속 → 활성시 브라스)
 const _ni={viewBox:'0 0 24 24',width:19,height:19,fill:'none',stroke:'currentColor',strokeWidth:1.6,strokeLinecap:'round',strokeLinejoin:'round'};
@@ -2534,6 +2601,7 @@ function App(){
   const [authed,setAuthed]=useState(null);
   const [view,setView]=useState('home');
   const [me,setMe]=useState(null); // 내 staff 행 {role,perms,email,name}
+  const [showPolicy,setShowPolicy]=useState(false);
   useEffect(()=>{ if(!sb)return; sb.auth.getSession().then(({data})=>setAuthed(!!data.session)); },[]);
   useEffect(()=>{ if(authed && sb) maybeDailySnapshot(sb); },[authed]);
   useEffect(()=>{
@@ -2581,6 +2649,7 @@ function App(){
         </nav>
         <div className="side-spacer"/>
         <div className="side-me">{me.name||me.email}<small>{isMaster?'마스터':'프리랜서'}</small></div>
+        <button className="link" style={{margin:'0 0 8px',fontSize:12,alignSelf:'flex-start'}} onClick={()=>setShowPolicy(true)}>개인정보 처리방침</button>
         <button className="btn ghost sm" style={{width:'100%'}} onClick={logout}>로그아웃</button>
       </aside>
       <button className="mob-logout" onClick={logout} title="로그아웃" aria-label="로그아웃">
@@ -2598,6 +2667,7 @@ function App(){
          shownView==='products'? <ProductsView sb={sb}/> :
          shownView==='staff'? <StaffAdmin sb={sb}/> : <LogsView sb={sb}/>}
       </main>
+      {showPolicy && <PrivacyModal onClose={()=>setShowPolicy(false)}/>}
     </div>
     </PermCtx.Provider>
   );
