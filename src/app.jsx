@@ -55,15 +55,17 @@ async function logAct(sb,action,detail){
 }
 
 // ---------- 자동 백업(스냅샷) ----------
-const SNAP_TABLES=['members','memberships','lessons','payments','lockers','products','trainer_colors','logs'];
+const SNAP_TABLES=['members','memberships','lessons','payments','lockers','products','trainer_colors','logs','member_notes','tasks'];
+const SNAP_OPTIONAL=new Set(['member_notes','tasks']); // notes_tasks.sql 미실행 상태여도 백업은 계속
 async function dumpAllTables(sb){
   const out={};
   for(const t of SNAP_TABLES){
     let all=[],from=0; const oc=t==='trainer_colors'?'name':'id';
+    let failed=false;
     while(true){ const {data,error}=await sb.from(t).select('*').order(oc,{ascending:true}).range(from,from+999);
-      if(error) throw new Error(t+': '+error.message);
+      if(error){ if(SNAP_OPTIONAL.has(t)){ failed=true; break; } throw new Error(t+': '+error.message); }
       all=all.concat(data||[]); if(!data||data.length<1000) break; from+=1000; }
-    out[t]=all;
+    if(!failed) out[t]=all;
   }
   return out;
 }
@@ -435,8 +437,53 @@ function EditMemberModal({sb,member,onClose,onSaved}){
 }
 
 // ---------- 회원 상세 ----------
+// ---------- 할일 등록 (Gymdesk 스타일 팔로업) ----------
+function TaskModal({sb,member,initTitle,onClose,onSaved}){
+  useEsc(onClose);
+  const {role,name:myName}=usePerm();
+  const [title,setTitle]=useState(initTitle||'');
+  const [due,setDue]=useState(ymd(new Date()));
+  const [assignee,setAssignee]=useState(myName||'');
+  const [staffNames,setStaffNames]=useState(null);
+  const [busy,setBusy]=useState(false),[err,setErr]=useState('');
+  useEffect(()=>{
+    if(role!=='master'){ setStaffNames(myName?[myName]:[]); return; }
+    sb.from('staff').select('name,active').eq('active',true).then(({data})=>{
+      const ns=[...new Set((data||[]).map(r=>String(r.name||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ko'));
+      setStaffNames(ns.length?ns:(myName?[myName]:[]));
+    });
+  },[]);
+  async function save(){
+    const t=title.trim(); if(!t){ setErr('할 일 내용을 입력하세요.'); return; }
+    setBusy(true);
+    const {error}=await sb.from('tasks').insert({member_id:member?member.id:null,title:t,due_date:due||null,assignee:assignee||null,created_by:myName||null});
+    setBusy(false);
+    if(error){ setErr('저장 실패: '+error.message+(/does not exist|schema cache/i.test(error.message)?' (db/notes_tasks.sql 실행 필요)':'')); return; }
+    logAct(sb,'할일 등록',`${assignee||'-'} · ${t}${member?` (${member.name})`:''}`);
+    onSaved();
+  }
+  return (
+    <div className="modal-ov" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}>
+      <div className="mhead"><h3>할 일 등록</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+      {member && <p className="muted" style={{fontSize:12,marginTop:0}}>관련 회원: <b>{member.name}</b></p>}
+      <div className="field"><label>할 일</label><input autoFocus value={title} onChange={e=>setTitle(e.target.value)} placeholder="예: 재등록 상담 전화"/></div>
+      <div className="field"><label>기한</label><input type="date" value={due} onChange={e=>setDue(e.target.value)}/></div>
+      <div className="field"><label>담당</label>
+        {role==='master'
+          ? <select value={assignee} onChange={e=>setAssignee(e.target.value)}>
+              {(staffNames||[]).map(n=><option key={n} value={n}>{n}</option>)}
+              {assignee && staffNames && !staffNames.includes(assignee) && <option value={assignee}>{assignee}</option>}
+            </select>
+          : <input value={assignee} disabled/>}
+      </div>
+      <button className="btn" disabled={busy} onClick={save}>{busy?'저장 중...':'등록'}</button>
+      <div className="err">{err}</div>
+    </div></div>
+  );
+}
+
 function Detail({sb,member:m0,onClose,panel,panelTop}){
-  const {can,role}=usePerm();
+  const {can,role,name:myName}=usePerm();
   const [member,setMember]=useState(m0);
   const [trainerOpts,setTrainerOpts]=useState([]);
   const [ms,setMs]=useState(null),[ls,setLs]=useState(null),[pays,setPays]=useState(null),[myLockers,setMyLockers]=useState([]);
@@ -446,7 +493,9 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
   const [refund,setRefund]=useState(null);
   const [editPay,setEditPay]=useState(null);
   const [hist,setHist]=useState(null);
-  useEsc((reg||editMs||editMember||showHistory||lockerPick||collect||refund||editPay) ? (()=>{}) : onClose);
+  const [notes,setNotes]=useState(null),[noteBody,setNoteBody]=useState(''),[noteBusy,setNoteBusy]=useState(false);
+  const [taskModal,setTaskModal]=useState(null); // {initTitle}
+  useEsc((reg||editMs||editMember||showHistory||lockerPick||collect||refund||editPay||taskModal) ? (()=>{}) : onClose);
   async function reload(){
     const a=await sb.from('memberships').select('*').eq('member_id',member.id).order('end_date',{ascending:false});
     setMs(a.data||[]);
@@ -458,6 +507,24 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
     setMyLockers(d.data||[]);
     const h=await sb.from('logs').select('*').in('action',['홀딩','홀딩 해제','회원권 양도','회원권 연장']).ilike('detail',`%${member.name}%`).order('at',{ascending:false}).limit(30);
     setHist(h.data||[]);
+    const n=await sb.from('member_notes').select('*').eq('member_id',member.id).order('at',{ascending:false}).limit(100);
+    setNotes(n.error?'na':(n.data||[]));
+  }
+  async function addNote(){
+    const body=noteBody.trim(); if(!body||noteBusy) return;
+    setNoteBusy(true);
+    const {error}=await sb.from('member_notes').insert({member_id:member.id,body,author:myName||null});
+    setNoteBusy(false);
+    if(error) return alert('노트 저장 실패: '+error.message+(/does not exist|schema cache/i.test(error.message)?' (db/notes_tasks.sql 실행 필요)':''));
+    logAct(sb,'노트 작성',member.name);
+    setNoteBody(''); reload();
+  }
+  async function delNote(n){
+    if(!confirm('이 노트를 삭제할까요?')) return;
+    const {error}=await sb.from('member_notes').delete().eq('id',n.id);
+    if(error) return alert('삭제 실패: '+error.message);
+    logAct(sb,'노트 삭제',member.name);
+    reload();
   }
   async function delMember(){
     if(!confirm(`'${member.name}' 회원을 삭제할까요?\n\n· 보유 회원권도 함께 삭제됩니다\n· 수업/결제 기록은 남지만 회원 연결이 해제됩니다\n· 배정된 락커는 자동 회수됩니다\n\n이 작업은 되돌릴 수 없습니다.`)) return;
@@ -584,6 +651,27 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
                 <div className="muted" style={{fontSize:13}}>{l.detail||''}</div>
               </div>))}
           </div>
+          <div className="mp-cardbox">
+            <h3><span>📝 노트 {Array.isArray(notes)?`(${notes.length})`:''}</span>
+              <button className="btn ghost sm" onClick={()=>setTaskModal({initTitle:''})}>＋ 할일</button></h3>
+            <div className="note-add">
+              <textarea rows={2} value={noteBody} onChange={e=>setNoteBody(e.target.value)} placeholder="상담 내용·부상·특이사항 기록 (날짜·작성자 자동 저장)"/>
+              <button className="btn sm" disabled={noteBusy||!noteBody.trim()} onClick={addNote}>{noteBusy?'저장...':'저장'}</button>
+            </div>
+            {notes===null? <div className="muted">불러오는 중...</div> :
+              notes==='na'? <div className="muted">노트 기능을 사용하려면 db/notes_tasks.sql을 Supabase SQL 에디터에서 실행하세요.</div> :
+              notes.length===0? <div className="muted">아직 노트가 없습니다. 기록하면 시간순으로 쌓입니다.</div> :
+              notes.map(n=>(<div className="card" key={n.id} style={{padding:'9px 14px'}}>
+                <div style={{whiteSpace:'pre-wrap',fontSize:14}}>{n.body}</div>
+                <div className="kv" style={{marginTop:6}}>
+                  <span className="muted" style={{fontSize:12}}>{n.author||'-'} · {fmtDT(n.at)}</span>
+                  <span style={{whiteSpace:'nowrap'}}>
+                    <button className="link" style={{margin:0,fontSize:12}} title="이 노트로 팔로업 할일 만들기" onClick={()=>setTaskModal({initTitle:n.body.slice(0,60)})}>할일↗</button>
+                    {(role==='master'||n.author===myName) && <button className="link" style={{margin:'0 0 0 8px',fontSize:12,color:'#d98b7a'}} onClick={()=>delNote(n)}>삭제</button>}
+                  </span>
+                </div>
+              </div>))}
+          </div>
         </div>
       </div>
     </div>
@@ -595,6 +683,7 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
     {collect && <CollectModal sb={sb} member={member} memberships={ms||[]} onClose={()=>setCollect(false)} onSaved={()=>{reload();}}/>}
     {refund && <RefundModal sb={sb} member={member} payment={refund} onClose={()=>setRefund(null)} onSaved={()=>{setRefund(null);reload();}}/>}
     {editPay && <EditPaymentModal sb={sb} member={member} payment={editPay} onClose={()=>setEditPay(null)} onSaved={()=>{setEditPay(null);reload();}}/>}
+    {taskModal && <TaskModal sb={sb} member={member} initTitle={taskModal.initTitle} onClose={()=>setTaskModal(null)} onSaved={()=>setTaskModal(null)}/>}
   </>), document.body);
 }
 
@@ -1953,13 +2042,27 @@ function DashboardView({sb}){
   const [members,setMembers]=useState(null);
   const [ms,setMs]=useState([]);
   const [sel,setSel]=useState(null);
+  const [lessons,setLessons]=useState([]);
+  const [tasks,setTasks]=useState(null); // null=로딩, 'na'=notes_tasks.sql 미실행
+  const [taskModal,setTaskModal]=useState(false);
   async function load(){
     try{ await sb.rpc('expire_overdue'); }catch(e){}
-    const [a,b]=await Promise.all([
+    const cut=new Date(Date.now()-42*86400000).toISOString();
+    const [a,b,c,d]=await Promise.all([
       sb.from('members').select('*').order('name'),
-      sb.from('memberships').select('*')
+      sb.from('memberships').select('*'),
+      sb.from('lessons').select('member_id,start_at,status').gte('start_at',cut).not('member_id','is',null).limit(5000),
+      sb.from('tasks').select('*').eq('done',false).order('due_date',{ascending:true,nullsFirst:false}).limit(100)
     ]);
     setMembers(a.data||[]); setMs(b.data||[]);
+    setLessons(c.data||[]);
+    setTasks(d.error?'na':(d.data||[]));
+  }
+  async function completeTask(t){
+    const {error}=await sb.from('tasks').update({done:true,done_at:new Date().toISOString()}).eq('id',t.id);
+    if(error) return alert('완료 처리 실패: '+error.message);
+    logAct(sb,'할일 완료',t.title);
+    setTasks(ts=>Array.isArray(ts)?ts.filter(x=>x.id!==t.id):ts);
   }
   useEffect(()=>{ load(); },[]);
   const memById=useMemo(()=>{const o={};(members||[]).forEach(m=>o[m.id]=m);return o;},[members]);
@@ -1977,6 +2080,39 @@ function DashboardView({sb}){
       if(!best[m.member_id]||m.end_date>best[m.member_id].end_date) best[m.member_id]=m; });
     return Object.values(best).sort((a,b)=>(b.end_date||'').localeCompare(a.end_date||'')); })();
   const unpaid=(ms||[]).filter(m=>(m.unpaid||0)>0).sort((a,b)=>b.unpaid-a.unpaid);
+  // 이탈 위험 (PushPress 무출석 감지 + Zen Planner 출석급감 레드플래그)
+  // 활성 회차권(PT) 보유 회원 중: 예정 예약 없음 + 최근 14일 완료수업 0건 = 무출석 / 이전 4주 평균 대비 절반 이하 = 급감
+  const risk=(()=>{
+    const now=Date.now(), d14=now-14*86400000, d42=now-42*86400000;
+    const liveStart={};
+    (ms||[]).forEach(m=>{ if(m.status!=='활성'||!(m.total_count>0)) return;
+      const s=m.start_date||''; if(!(m.member_id in liveStart)||s<liveStart[m.member_id]) liveStart[m.member_id]=s; });
+    const stat={};
+    (lessons||[]).forEach(l=>{
+      const ts=new Date(l.start_at).getTime(); if(isNaN(ts)) return;
+      const o=stat[l.member_id]||(stat[l.member_id]={last:0,recent14:0,prev28:0,future:0});
+      if(l.status==='예약'&&ts>now){ o.future++; return; }
+      if(l.status!=='완료') return;
+      if(ts>o.last) o.last=ts;
+      if(ts>=d14) o.recent14++; else if(ts>=d42) o.prev28++;
+    });
+    const grace=ymd(new Date(now-14*86400000));
+    const out=[];
+    Object.keys(liveStart).forEach(id=>{
+      if(!memById[id]) return;                    // RLS로 안 보이는 회원 제외
+      if((liveStart[id]||'')>grace) return;       // 등록 14일 미만 신규는 유예
+      const o=stat[id]||{last:0,recent14:0,prev28:0,future:0};
+      if(o.future>0) return;                      // 예정된 예약이 있으면 안심
+      if(o.recent14===0){
+        const days=o.last?Math.floor((now-o.last)/86400000):null;
+        out.push({id,type:'none',days,sort:(days==null?999:days)});
+      }else{
+        const avg14=o.prev28/2;
+        if(avg14>=2 && o.recent14<=avg14*0.5) out.push({id,type:'drop',recent14:o.recent14,avg14,sort:0});
+      }
+    });
+    return out.sort((a,b)=>((b.type==='none')-(a.type==='none'))||b.sort-a.sort);
+  })();
   // 활성 회원 성별비 / 연령대 (브로제이 인사이트 대응)
   const actives=(members||[]).filter(m=>m.status==='활성');
   const genderCnt={남성:0,여성:0,미입력:0};
@@ -2003,6 +2139,39 @@ function DashboardView({sb}){
       {can('sales') && <div className="stat"><div className="n" style={{color:unpaidTotal>0?'#d98b7a':'var(--muted)'}}>{unpaidTotal.toLocaleString()}<span style={{fontSize:14,fontWeight:600}}>원</span></div><div className="l">미수금 총액</div></div>}
     </div>
     <div className="dash-grid">
+      <div className="mp-cardbox">
+        <h3><span>✅ 할 일</span>
+          <span style={{display:'flex',gap:8,alignItems:'center'}}>
+            {Array.isArray(tasks) && <span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{tasks.length}건</span>}
+            <button className="btn ghost sm" onClick={()=>setTaskModal(true)}>＋ 추가</button>
+          </span></h3>
+        {tasks===null? <div className="muted">불러오는 중...</div> :
+          tasks==='na'? <div className="muted">할일 기능을 사용하려면 db/notes_tasks.sql을 Supabase SQL 에디터에서 실행하세요.</div> :
+          tasks.length===0? <div className="muted">열려있는 할 일이 없습니다<br/><span style={{fontSize:12}}>(회원 상세의 노트에서, 또는 ＋ 추가로 만들 수 있습니다)</span></div> :
+          tasks.slice(0,15).map(t=>{ const d=t.due_date?dday(t.due_date):null;
+            return (<div className="dash-row" key={t.id} style={{cursor:t.member_id?'pointer':'default'}} onClick={()=>{ if(t.member_id) openMember(t.member_id); }}>
+              <div style={{display:'flex',alignItems:'center',gap:9,minWidth:0}}>
+                <input type="checkbox" className="task-chk" title="완료 처리" onClick={e=>e.stopPropagation()} onChange={()=>completeTask(t)}/>
+                <div style={{minWidth:0}}>
+                  <b style={{display:'block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{t.title}</b>
+                  <span className="muted" style={{fontSize:12}}>{t.member_id&&nm(t.member_id)!=='-'?nm(t.member_id)+' · ':''}{t.assignee||'-'}</span>
+                </div>
+              </div>
+              {d!=null && <span className={'dday'+(d<0?' expired':'')}>{d<0?`${-d}일 지남`:d===0?'오늘':'D-'+d}</span>}
+            </div>); })}
+      </div>
+      <div className="mp-cardbox">
+        <h3><span>🚨 이탈 위험</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{risk.length}명</span></h3>
+        {risk.length===0? <div className="muted">이탈 위험 신호가 없습니다<br/><span style={{fontSize:12}}>(활성 회차권 보유 회원 중 예정 예약 없이 2주간 수업이 없거나 급감하면 표시됩니다)</span></div> :
+          risk.slice(0,15).map(r=>{ const m=memById[r.id]; return (
+            <div className="dash-row" key={r.id} onClick={()=>openMember(r.id)}>
+              <div><b>{m.name}</b> <span className="muted" style={{fontSize:13}}>· {m.assigned_trainer||'담당 미지정'}</span></div>
+              {r.type==='none'
+                ? <span style={{color:'#d98b7a',fontWeight:700,fontSize:13}}>{r.days==null?'6주+':r.days+'일'} 무출석</span>
+                : <span style={{color:'#e0a23c',fontWeight:700,fontSize:13}}>급감 · 2주 {r.recent14}회 (평소 {Math.round(r.avg14)}회)</span>}
+            </div>); })}
+        {risk.length>0 && <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>예정된 예약 없이 수업이 끊긴 회원입니다. 연락해 보세요.</p>}
+      </div>
       <div className="mp-cardbox">
         <h3><span>⏰ 만료 임박</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{soon.length}건</span></h3>
         {soon.length===0? <div className="muted">14일 내 만료 예정인 회원권이 없습니다</div> :
@@ -2073,6 +2242,7 @@ function DashboardView({sb}){
       </div>
     </div>
     {sel && <Detail sb={sb} member={sel} onClose={()=>{setSel(null);load();}}/>}
+    {taskModal && <TaskModal sb={sb} member={null} onClose={()=>setTaskModal(false)} onSaved={()=>{setTaskModal(false);load();}}/>}
   </div>);
 }
 
@@ -2509,6 +2679,7 @@ function StaffAddModal({sb,onClose,onSaved}){
   async function save(){
     const em=email.trim().toLowerCase();
     if(!em){ setErr('이메일을 입력하세요 (Supabase 로그인 계정과 동일하게).'); return; }
+    if(!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(em)){ setErr('이메일 형식이 아닙니다. 이름은 표시명 칸에, 여기엔 로그인 이메일을 입력하세요.'); return; }
     setBusy(true);
     const perms = role==='trainer'? DEFAULT_TRAINER_PERMS : {};
     const {error}=await sb.from('staff').insert({email:em,name:name.trim()||null,role,perms,active:true});
