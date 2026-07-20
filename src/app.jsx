@@ -55,12 +55,12 @@ async function logAct(sb,action,detail){
 }
 
 // ---------- 자동 백업(스냅샷) ----------
-const SNAP_TABLES=['members','memberships','lessons','payments','lockers','products','trainer_colors','logs','member_notes','tasks'];
-const SNAP_OPTIONAL=new Set(['member_notes','tasks']); // notes_tasks.sql 미실행 상태여도 백업은 계속
+const SNAP_TABLES=['members','memberships','lessons','payments','lockers','products','trainer_colors','logs','member_notes','tasks','trainer_rates'];
+const SNAP_OPTIONAL=new Set(['member_notes','tasks','trainer_rates']); // 부가 테이블: SQL 미실행/권한 없음이어도 백업은 계속
 async function dumpAllTables(sb){
   const out={};
   for(const t of SNAP_TABLES){
-    let all=[],from=0; const oc=t==='trainer_colors'?'name':'id';
+    let all=[],from=0; const oc=(t==='trainer_colors'||t==='trainer_rates')?'name':'id';
     let failed=false;
     while(true){ const {data,error}=await sb.from(t).select('*').order(oc,{ascending:true}).range(from,from+999);
       if(error){ if(SNAP_OPTIONAL.has(t)){ failed=true; break; } throw new Error(t+': '+error.message); }
@@ -401,13 +401,15 @@ function EditMemberModal({sb,member,onClose,onSaved}){
   const [gender,setGender]=useState(member.gender||'');
   const [address,setAddress]=useState(member.address||'');
   const [memo,setMemo]=useState(member.memo||'');
+  const [tags,setTags]=useState(member.tags||'');
   const [consentAt,setConsentAt]=useState(member.consent_at||null);
   const [consentMkt,setConsentMkt]=useState(!!member.consent_marketing);
   const [busy,setBusy]=useState(false),[err,setErr]=useState('');
   async function save(){
     if(!name.trim()) return setErr('이름을 입력하세요');
     setBusy(true);
-    const {error}=await sb.from('members').update({name:name.trim(),phone:phone||null,birth:birth||null,gender:gender||null,address:address||null,memo:memo||null,consent_at:consentAt,consent_marketing:consentMkt}).eq('id',member.id);
+    const cleanTags=tags.split(',').map(s=>s.trim()).filter(Boolean).join(', ');
+    const {error}=await sb.from('members').update({name:name.trim(),phone:phone||null,birth:birth||null,gender:gender||null,address:address||null,memo:memo||null,tags:cleanTags||null,consent_at:consentAt,consent_marketing:consentMkt}).eq('id',member.id);
     setBusy(false); if(error){ setErr('저장 실패: '+error.message); return; }
     logAct(sb,'회원정보 수정',name.trim());
     onSaved();
@@ -426,6 +428,7 @@ function EditMemberModal({sb,member,onClose,onSaved}){
       </div>
       <div className="field"><label>주소</label><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="주소"/></div>
       <div className="field"><label>메모</label><input value={memo} onChange={e=>setMemo(e.target.value)} placeholder="특이사항"/></div>
+      <div className="field"><label>태그 <span className="muted">(쉼표로 구분)</span></label><input value={tags} onChange={e=>setTags(e.target.value)} placeholder="예: 재활, 대회준비, 소개고객"/></div>
       <div className="field"><label>개인정보 동의</label>
         <label className="chk"><input type="checkbox" checked={!!consentAt} onChange={e=>setConsentAt(e.target.checked?(member.consent_at||new Date().toISOString()):null)}/> 개인정보 수집·이용 동의 (필수){consentAt && <span className="muted" style={{marginLeft:6,fontSize:12}}>· {fmtDate(consentAt)}</span>}</label>
         <label className="chk" style={{marginTop:4}}><input type="checkbox" checked={consentMkt} onChange={e=>setConsentMkt(e.target.checked)}/> 마케팅 정보 수신 동의 (선택)</label>
@@ -537,6 +540,17 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
   }
   async function reloadMember(){ const {data}=await sb.from('members').select('*').eq('id',member.id).single(); if(data) setMember(data); }
   async function assignTrainer(v){ await sb.from('members').update({assigned_trainer:v||null}).eq('id',member.id); logAct(sb,'담당 변경',`${member.name} → ${v||'미배정'}`); reloadMember(); }
+  // 동의서 서명 링크(1회용 토큰): 회원 기기에서 로그인 없이 서명 → consent_at 기록
+  async function makeConsentLink(){
+    const token=crypto.randomUUID();
+    const {error}=await sb.from('members').update({consent_token:token}).eq('id',member.id);
+    if(error) return alert('링크 생성 실패: '+error.message+(/consent_token|schema cache/i.test(error.message)?' (db/tags_payroll_consent.sql 실행 필요)':''));
+    logAct(sb,'동의링크 생성',member.name);
+    const cfg=btoa((localStorage.getItem(LS.url)||'')+'|'+(localStorage.getItem(LS.key)||''));
+    const link=`${location.origin}${location.pathname}?consent=${token}#cfg=${cfg}`;
+    try{ await navigator.clipboard.writeText(link); alert('서명 링크가 복사되었습니다.\n회원 기기(태블릿·폰) 브라우저에 붙여넣어 열면 서명 페이지가 나옵니다.\n링크는 1회용이며 서명 후 자동 만료됩니다.'); }
+    catch(e){ prompt('아래 링크를 복사해 회원 기기에서 열어주세요 (1회용)', link); }
+  }
   useEffect(()=>{ reload(); },[member.id]);
   useEffect(()=>{ if(role!=='master') return;
     sb.from('memberships').select('trainer').not('trainer','is',null).limit(5000).then(({data})=>{
@@ -591,8 +605,10 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
             <div className="kv"><span>개인정보 동의</span>
               {member.consent_at
                 ? <b style={{color:'#7dc4a0'}}>동의 · {fmtDate(member.consent_at)}{member.consent_marketing?' · 마케팅':''}</b>
-                : <b style={{color:'#d98b7a'}}>미확보</b>}
+                : <b style={{color:'#d98b7a'}}>미확보 {can('members') && <button className="link" style={{margin:'0 0 0 4px',fontSize:12}} title="회원 기기에서 로그인 없이 서명받는 1회용 링크" onClick={makeConsentLink}>서명 링크</button>}</b>}
             </div>
+            {member.tags && <div className="kv"><span>태그</span>
+              <b>{member.tags.split(',').map(s=>s.trim()).filter(Boolean).map(t=><span key={t} className="tagchip">{t}</span>)}</b></div>}
             <div className="kv"><span>락커</span>
               <b style={{cursor:'pointer',color:'var(--brass)',textDecoration:'underline'}} onClick={()=>setLockerPick(true)} title="클릭하여 락커 지정/변경">
                 {myLockers.length? myLockers.map(l=>l.number+'번').join(', ') : '지정하기 +'}</b></div>
@@ -931,6 +947,7 @@ function MembersView({sb}){
   const [sel,setSel]=useState(null);
   const [adding,setAdding]=useState(false);
   const [sort,setSort]=useState('name');
+  const [tagF,setTagF]=useState('');
   const [checked,setChecked]=useState(()=>new Set());
   const [msAll,setMsAll]=useState([]);
   async function load(){
@@ -949,11 +966,15 @@ function MembersView({sb}){
   const isHold=r=>((msFlags[r.id]&&msFlags[r.id].hold)||r.status==='홀딩');
   const counts = useMemo(()=>{ const c={전체:rows?rows.length:0,활성:0,임박:0,홀딩:0,만료:0,미등록:0,동의미확보:0};
     (rows||[]).forEach(r=>{ if(['활성','만료','미등록'].includes(r.status))c[r.status]++; if(isSoon(r))c.임박++; if(isHold(r))c.홀딩++; if(!r.consent_at)c.동의미확보++; }); return c; },[rows,msFlags]);
+  const allTags=useMemo(()=>{ const s=new Set();
+    (rows||[]).forEach(r=>(r.tags||'').split(',').forEach(t=>{ t=t.trim(); if(t) s.add(t); }));
+    return [...s].sort((a,b)=>a.localeCompare(b,'ko')); },[rows]);
   const filtered = (rows||[]).filter(r=>{
     if(tab==='임박'){ if(!isSoon(r)) return false; }
     else if(tab==='홀딩'){ if(!isHold(r)) return false; }
     else if(tab==='동의미확보'){ if(r.consent_at) return false; }
     else if(tab!=='전체' && r.status!==tab) return false;
+    if(tagF && !(r.tags||'').split(',').map(s=>s.trim()).includes(tagF)) return false;
     if(query){ const nq=query.trim(); const d=query.replace(/\D/g,''); return (r.name||'').includes(nq)||(d&&(r.phone||'').replace(/\D/g,'').includes(d)); }
     return true;
   });
@@ -964,8 +985,8 @@ function MembersView({sb}){
   });
   const shown = sorted.slice(0,300);
   function exportMembers(){
-    const rows=[['번호','상태','고객명','성별','나이','생년월일','연락처','주소','등록일','상담담당','메모']];
-    sorted.forEach((r,i)=>rows.push([i+1,r.status||'',r.name||'',r.gender||'',age(r.birth)||'',r.birth||'',r.phone||'',r.address||'',fmtDate(r.reg_date),r.manager||'',r.memo||'']));
+    const rows=[['번호','상태','고객명','성별','나이','생년월일','연락처','주소','등록일','상담담당','태그','메모']];
+    sorted.forEach((r,i)=>rows.push([i+1,r.status||'',r.name||'',r.gender||'',age(r.birth)||'',r.birth||'',r.phone||'',r.address||'',fmtDate(r.reg_date),r.manager||'',r.tags||'',r.memo||'']));
     downloadCSV('회원목록.csv',rows);
   }
   function toggle(id){ setChecked(p=>{ const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; }); }
@@ -1002,6 +1023,10 @@ function MembersView({sb}){
         <button className="btn sm" onClick={()=>doSearch()}>🔍 검색</button>
       </div>
       {query && <span className="muted" style={{fontSize:13}}>'{query}' 검색 {filtered.length}명</span>}
+      {allTags.length>0 && <select value={tagF} onChange={e=>setTagF(e.target.value)} style={{background:'var(--forest2)',border:'1px solid '+(tagF?'var(--brass)':'var(--line)'),borderRadius:10,padding:'9px 12px',color:tagF?'var(--brass)':'var(--cream)',fontSize:14,cursor:'pointer'}}>
+        <option value="">🏷 태그 전체</option>
+        {allTags.map(t=><option key={t} value={t}>{t}</option>)}
+      </select>}
       <select value={sort} onChange={e=>setSort(e.target.value)} style={{background:'var(--forest2)',border:'1px solid var(--line)',borderRadius:10,padding:'9px 12px',color:'var(--cream)',fontSize:14,cursor:'pointer'}}>
         <option value="name">이름순</option><option value="new">최근 등록순</option><option value="old">오래된 등록순</option>
       </select>
@@ -2248,16 +2273,30 @@ function DashboardView({sb}){
 
 // ---------- 매출 ----------
 function SalesView({sb}){
+  const {role}=usePerm();
   const [pays,setPays]=useState(null);
   const [members,setMembers]=useState([]);
   const [unpaidSum,setUnpaidSum]=useState(0);
   const [ref,setRef]=useState(()=>{const d=new Date();return {y:d.getFullYear(),m:d.getMonth()};});
   const [msAll,setMsAll]=useState([]);
+  const [mode,setMode]=useState('month'); // month=월별 상세 / report=경영 리포트
+  const [rates,setRates]=useState({});   // 강사별 정산율% (trainer_rates, 마스터 전용)
+  const rateTimer=useRef({});
   useEffect(()=>{
     sb.from('payments').select('*').order('paid_at',{ascending:false}).then(({data})=>setPays(data||[]));
     sb.from('members').select('id,name').then(({data})=>setMembers(data||[]));
-    sb.from('memberships').select('id,member_id,unpaid,trainer').then(({data})=>{ setMsAll(data||[]); setUnpaidSum((data||[]).reduce((s,m)=>s+(m.unpaid||0),0)); });
+    sb.from('memberships').select('id,member_id,unpaid,trainer,status,start_date,end_date').then(({data})=>{ setMsAll(data||[]); setUnpaidSum((data||[]).reduce((s,m)=>s+(m.unpaid||0),0)); });
+    if(role==='master') sb.from('trainer_rates').select('*').then(({data})=>{ const o={}; (data||[]).forEach(r=>o[r.name]=r.rate); setRates(o); });
   },[]);
+  function setRate(name,v){
+    const rate=Math.max(0,Math.min(100,parseInt(String(v).replace(/\D/g,''))||0));
+    setRates(p=>({...p,[name]:rate}));
+    clearTimeout(rateTimer.current[name]);
+    rateTimer.current[name]=setTimeout(async()=>{
+      const {error}=await sb.from('trainer_rates').upsert({name,rate,updated_at:new Date().toISOString()});
+      if(error) alert('정산율 저장 실패: '+error.message+(/does not exist|schema cache/i.test(error.message)?' (db/tags_payroll_consent.sql 실행 필요)':''));
+    },600);
+  }
   const [monthLessons,setMonthLessons]=useState([]);
   useEffect(()=>{ const s=new Date(ref.y,ref.m,1), e=new Date(ref.y,ref.m+1,1);
     sb.from('lessons').select('trainer,status,member_id').gte('start_at',s.toISOString()).lt('start_at',e.toISOString()).then(({data})=>setMonthLessons(data||[])); },[ref]);
@@ -2293,7 +2332,84 @@ function SalesView({sb}){
       if(l.member_id)s.members.add(l.member_id); });
     monthPays.forEach(p=>{ if(!p.membership_id)return; const t=trainerByMs[p.membership_id]; if(t) get(t).revenue+=(p.amount||0); });
     return Object.entries(st).sort((a,b)=>(b[1].done+b[1].booked)-(a[1].done+a[1].booked)); },[monthLessons,monthPays,trainerByMs]);
+  // ---- 경영 리포트: 최근 12개월 매출추이 + 신규/재등록 + 재등록률 코호트 ----
+  const report=useMemo(()=>{
+    if(!pays) return null;
+    const now=new Date();
+    const months=[]; for(let i=11;i>=0;i--){ const d=new Date(now.getFullYear(),now.getMonth()-i,1); months.push(`${d.getFullYear()}-${pad(d.getMonth()+1)}`); }
+    const mset=new Set(months);
+    const by={}; months.forEach(m=>by[m]={total:0,cnt:0,nw:0,re:0});
+    pays.forEach(p=>{ const m=(p.paid_at||'').slice(0,7); if(!mset.has(m)) return; const o=by[m];
+      o.total+=(p.amount||0); o.cnt++;
+      if((p.amount||0)>0 && p.membership_id && p.method!=='미수금수납'){ const rk=rankByMs[p.membership_id]; if(rk===1)o.nw++; else if(rk>1)o.re++; } });
+    // 재등록률: 만료월 코호트(최근 6개월) — 만료 후 90일 내 새 회원권 시작 여부
+    const byMember={}; msAll.forEach(m=>{ (byMember[m.member_id]=byMember[m.member_id]||[]).push(m); });
+    const cohorts=[];
+    for(let i=6;i>=1;i--){
+      const d=new Date(now.getFullYear(),now.getMonth()-i,1); const ym=`${d.getFullYear()}-${pad(d.getMonth()+1)}`;
+      const expired={};
+      msAll.forEach(m=>{ if(m.status!=='만료'||!(m.end_date||'').startsWith(ym)) return;
+        if(!expired[m.member_id]||m.end_date>expired[m.member_id]) expired[m.member_id]=m.end_date; });
+      let tot=0,re=0,open=false;
+      Object.entries(expired).forEach(([mid,ed])=>{
+        const lim=new Date(ed); lim.setDate(lim.getDate()+90); if(lim>now) open=true;
+        const limS=ymd(lim);
+        const rereg=(byMember[mid]||[]).some(x=>x.start_date && x.start_date>ed && x.start_date<=limS);
+        tot++; if(rereg) re++;
+      });
+      cohorts.push({ym,tot,re,open});
+    }
+    const cohortTot=cohorts.reduce((s,c)=>s+c.tot,0), cohortRe=cohorts.reduce((s,c)=>s+c.re,0);
+    const total12=months.reduce((s,m)=>s+by[m].total,0);
+    const activeMonths=months.filter(m=>by[m].total!==0).length||1;
+    const maxM=Math.max(1,...months.map(m=>by[m].total));
+    return {months,by,cohorts,total12,avg:Math.round(total12/activeMonths),cohortTot,cohortRe,maxM};
+  },[pays,msAll,rankByMs]);
   return (<div>
+    <div className="seg" style={{display:'inline-flex',marginBottom:14}}>
+      <button className={mode==='month'?'on':''} onClick={()=>setMode('month')}>월별 상세</button>
+      <button className={mode==='report'?'on':''} onClick={()=>setMode('report')}>📊 경영 리포트</button>
+    </div>
+    {mode==='report' && (report===null? <div className="empty">불러오는 중...</div> : <>
+      <div className="stats">
+        <div className="stat"><div className="n" style={{color:'var(--brass)'}}>{report.total12.toLocaleString()}<span style={{fontSize:15,fontWeight:600}}>원</span></div><div className="l">최근 12개월 매출</div></div>
+        <div className="stat"><div className="n">{report.avg.toLocaleString()}<span style={{fontSize:15,fontWeight:600}}>원</span></div><div className="l">월평균 매출 (매출 있는 달 기준)</div></div>
+        <div className="stat"><div className="n" style={{color:report.cohortTot?'#7dc4a0':'var(--muted)'}}>{report.cohortTot?Math.round(report.cohortRe/report.cohortTot*100)+'%':'-'}</div><div className="l">재등록률 (최근 6개월 만료 {report.cohortTot}명)</div></div>
+        <div className="stat"><div className="n">{(()=>{const o=report.by[report.months[11]];return o.nw+o.re;})()}<span style={{fontSize:15,fontWeight:600}}>건</span></div><div className="l">이번달 등록 (신규+재등록)</div></div>
+      </div>
+      <div className="mp-cardbox" style={{marginBottom:16}}>
+        <h3><span>월별 매출 추이 · 최근 12개월</span></h3>
+        <div className="saleschart">
+          {report.months.map(m=>{const v=report.by[m].total; return <div key={m} className="bar" style={{height:Math.max(2,Math.abs(v)/report.maxM*100)+'%',opacity:v?1:.2}} title={`${m} · ${v.toLocaleString()}원`}/>;})}
+        </div>
+        <div className="saleschart-x">{report.months.map(m=><span key={m}>{parseInt(m.slice(5))}월</span>)}</div>
+      </div>
+      <div className="mp-cardbox" style={{marginBottom:16}}>
+        <h3><span>월별 등록 현황 · 최근 6개월</span></h3>
+        <table className="ptable"><thead><tr><th>월</th><th style={{textAlign:'right'}}>매출</th><th style={{textAlign:'right'}}>결제 건수</th><th style={{textAlign:'right'}}>신규</th><th style={{textAlign:'right'}}>재등록</th></tr></thead>
+          <tbody>{report.months.slice(6).map(m=>{const o=report.by[m]; return (<tr key={m}>
+            <td style={{fontWeight:700}}>{m.slice(0,4)}.{m.slice(5)}</td>
+            <td style={{textAlign:'right'}}>{o.total.toLocaleString()}원</td>
+            <td style={{textAlign:'right'}}>{o.cnt}</td>
+            <td style={{textAlign:'right',color:o.nw?'#7dc4a0':undefined}}>{o.nw}</td>
+            <td style={{textAlign:'right'}}>{o.re}</td>
+          </tr>);})}</tbody></table>
+      </div>
+      <div className="mp-cardbox">
+        <h3><span>재등록률 · 만료월 코호트</span></h3>
+        {report.cohortTot===0? <div className="muted">최근 6개월 내 만료된 회원권이 없습니다</div> :
+        <table className="ptable"><thead><tr><th>만료월</th><th style={{textAlign:'right'}}>만료 회원</th><th style={{textAlign:'right'}}>재등록</th><th style={{textAlign:'right'}}>재등록률</th></tr></thead>
+          <tbody>{report.cohorts.map(c=>(<tr key={c.ym}>
+            <td style={{fontWeight:700}}>{c.ym.slice(0,4)}.{c.ym.slice(5)}{c.open?<span className="muted" style={{fontSize:11,marginLeft:6}}>집계중</span>:null}</td>
+            <td style={{textAlign:'right'}}>{c.tot}명</td>
+            <td style={{textAlign:'right'}}>{c.re}명</td>
+            <td style={{textAlign:'right',fontWeight:700,color:c.tot&&c.re/c.tot>=0.5?'#7dc4a0':undefined}}>{c.tot?Math.round(c.re/c.tot*100)+'%':'-'}</td>
+          </tr>))}</tbody></table>}
+        <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>만료 회원권 기준, 만료 후 90일 내 새 회원권 시작 시 재등록으로 집계. '집계중'=아직 90일 미경과.</p>
+      </div>
+      <p className="muted" style={{fontSize:12,marginTop:14}}>※ 앱에 기록된 결제·회원권만 집계됩니다. 브로제이 과거 매출·만료 이력은 반영되지 않아 초기 수치는 보수적으로 나옵니다.</p>
+    </>)}
+    {mode==='month' && <>
     <div className="sales-nav">
       <button onClick={()=>move(-1)}>← 이전달</button>
       <div className="per">{ref.y}년 {ref.m+1}월</div>
@@ -2319,7 +2435,7 @@ function SalesView({sb}){
     <div className="mp-cardbox" style={{marginBottom:16}}>
       <h3><span>강사별 실적 · {ref.m+1}월</span></h3>
       {trainerStats.length===0? <div className="muted">{ref.m+1}월 수업 기록이 없습니다</div> :
-        <table className="ptable"><thead><tr><th>강사</th><th style={{textAlign:'right'}}>완료</th><th style={{textAlign:'right'}}>예정</th><th style={{textAlign:'right'}}>노쇼</th><th style={{textAlign:'right'}}>휴강</th><th style={{textAlign:'right'}}>수업회원</th><th style={{textAlign:'right'}}>매출 기여</th></tr></thead>
+        <table className="ptable"><thead><tr><th>강사</th><th style={{textAlign:'right'}}>완료</th><th style={{textAlign:'right'}}>예정</th><th style={{textAlign:'right'}}>노쇼</th><th style={{textAlign:'right'}}>휴강</th><th style={{textAlign:'right'}}>수업회원</th><th style={{textAlign:'right'}}>매출 기여</th>{role==='master' && <><th style={{textAlign:'right'}}>정산율</th><th style={{textAlign:'right'}}>정산액</th></>}</tr></thead>
           <tbody>{trainerStats.map(([t,s])=>(<tr key={t}>
             <td style={{fontWeight:700}}>{t}</td>
             <td style={{textAlign:'right'}}>{s.done}</td>
@@ -2328,8 +2444,15 @@ function SalesView({sb}){
             <td style={{textAlign:'right'}}>{s.rest}</td>
             <td style={{textAlign:'right'}}>{s.members.size}명</td>
             <td style={{textAlign:'right'}}>{s.revenue?s.revenue.toLocaleString()+'원':'-'}</td>
+            {role==='master' && <>
+              <td style={{textAlign:'right',whiteSpace:'nowrap'}}>
+                <input value={rates[t]??''} placeholder="0" onChange={e=>setRate(t,e.target.value)}
+                  style={{width:44,background:'var(--forest)',border:'1px solid var(--line)',borderRadius:8,padding:'4px 6px',color:'var(--cream)',fontSize:13,textAlign:'right'}}/> %
+              </td>
+              <td style={{textAlign:'right',fontWeight:700,color:'var(--brass)'}}>{s.revenue&&rates[t]?Math.round(s.revenue*rates[t]/100).toLocaleString()+'원':'-'}</td>
+            </>}
           </tr>))}</tbody></table>}
-      <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>매출 기여 = 이달 결제 중 해당 강사 담당 회원권으로 들어온 금액.</p>
+      <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>매출 기여 = 이달 결제 중 해당 강사 담당 회원권으로 들어온 금액.{role==='master'?' 정산액 = 매출 기여 × 정산율(%). 정산율은 자동 저장되며 마스터에게만 보입니다.':''}</p>
     </div>
     <div className="mp-cardbox">
       <h3><span>거래 내역 {monthPays.length?`(${monthPays.length})`:''}</span>{monthPays.length>0 && <button className="btn ghost sm" onClick={exportCSV}>⤓ 엑셀 내보내기</button>}</h3>
@@ -2344,6 +2467,7 @@ function SalesView({sb}){
           </tr>))}</tbody></table>}
     </div>
     <p className="muted" style={{fontSize:12,marginTop:14}}>※ 앱에서 회원권/레슨 등록 시 기록된 결제만 집계됩니다. 브로제이 과거 매출은 반영되지 않습니다.</p>
+    </>}
   </div>);
 }
 
@@ -2757,6 +2881,50 @@ function PrivacyModal({onClose}){
 // ---------- App ----------
 // 네비 라인 아이콘 (currentColor 상속 → 활성시 브라스)
 const _ni={viewBox:'0 0 24 24',width:19,height:19,fill:'none',stroke:'currentColor',strokeWidth:1.6,strokeLinecap:'round',strokeLinejoin:'round'};
+// ---------- 동의서 서명 페이지 (로그인 불필요 · 1회용 토큰 · RPC로만 접근) ----------
+function ConsentSignPage({token}){
+  const [sb]=useState(()=>{
+    const c=getClient(); if(c) return c;
+    try{ const m=(location.hash||'').match(/cfg=([A-Za-z0-9+/=]+)/); if(m){ const [u,k]=atob(m[1]).split('|'); if(/^https?:\/\//i.test(u)&&k) return createClient(u,k); } }catch(e){}
+    return null;
+  });
+  const [info,setInfo]=useState(null); // null=로딩, 'bad'=무효, {masked_name, already_signed}
+  const [agree,setAgree]=useState(false),[mkt,setMkt]=useState(false);
+  const [busy,setBusy]=useState(false),[done,setDone]=useState(false),[err,setErr]=useState('');
+  useEffect(()=>{ if(!sb){ setInfo('bad'); return; }
+    sb.rpc('consent_link_info',{p_token:token}).then(({data,error})=>{
+      setInfo(error||!data||!data.length ? 'bad' : data[0]);
+    }).catch(()=>setInfo('bad'));
+  },[]);
+  async function sign(){
+    if(!agree){ setErr('필수 동의 항목에 체크해주세요.'); return; }
+    setBusy(true); setErr('');
+    const {data,error}=await sb.rpc('sign_consent',{p_token:token,p_marketing:mkt});
+    setBusy(false);
+    if(error||!data){ setErr('처리하지 못했습니다. 링크가 만료됐거나 이미 사용되었습니다.'); return; }
+    setDone(true);
+  }
+  const box={maxHeight:220,overflowY:'auto',whiteSpace:'pre-wrap',fontSize:12.5,lineHeight:1.65,background:'var(--forest)',border:'1px solid var(--line)',borderRadius:10,padding:'12px 14px',color:'var(--muted)',textAlign:'left'};
+  return (
+    <div className="center gl-scene"><GLMonogram size={520} opacity={.05} color="#B08D57"/><div className="panel gl-panel" style={{maxWidth:520}}>
+      <div className="gl-crest"><GLMonogram size={54} stroke={1.2} opacity={.9}/></div>
+      <div className="logo gl-logo-center">GYMLORD<small>개인정보 수집·이용 동의</small></div>
+      <Ornament/>
+      {info===null? <div className="muted" style={{padding:'30px 0',textAlign:'center'}}>불러오는 중...</div> :
+       info==='bad'? <div className="muted" style={{padding:'26px 0',textAlign:'center'}}>유효하지 않은 링크입니다.<br/>링크가 만료됐거나 이미 사용되었습니다.<br/>센터에 새 링크를 요청해주세요.</div> :
+       (done||info.already_signed)? <div style={{padding:'26px 0',textAlign:'center'}}><div style={{fontSize:38,marginBottom:10}}>✅</div><b>동의가 완료되었습니다</b><div className="muted" style={{marginTop:8,fontSize:13}}>이 창은 닫으셔도 됩니다. 감사합니다.</div></div> :
+       <>
+        <p style={{fontSize:14,margin:'6px 0 10px'}}><b>{info.masked_name}</b> 회원님, 아래 내용을 확인하고 동의해주세요.</p>
+        <div style={box}>{PRIVACY_POLICY}</div>
+        <label className="chk" style={{marginTop:12}}><input type="checkbox" checked={agree} onChange={e=>setAgree(e.target.checked)}/> (필수) 개인정보 수집·이용에 동의합니다</label>
+        <label className="chk" style={{marginTop:6}}><input type="checkbox" checked={mkt} onChange={e=>setMkt(e.target.checked)}/> (선택) 마케팅 정보 수신에 동의합니다</label>
+        <button className="btn" style={{marginTop:14,width:'100%'}} disabled={busy} onClick={sign}>{busy?'처리 중...':'동의합니다'}</button>
+        <div className="err">{err}</div>
+       </>}
+    </div></div>
+  );
+}
+
 const NAV_ICONS={
   home:(<svg {..._ni}><path d="M3 11.4 12 4l9 7.4"/><path d="M5.6 9.9V20h12.8V9.9"/><path d="M9.8 20v-5.6h4.4V20"/></svg>),
   members:(<svg {..._ni}><circle cx="12" cy="7.8" r="3.6"/><path d="M4.6 20c.7-4.1 3.7-6.1 7.4-6.1s6.7 2 7.4 6.1"/></svg>),
@@ -2787,6 +2955,9 @@ function App(){
     })();
   },[authed]);
   async function logout(){ await sb.auth.signOut(); setMe(null); setAuthed(false); }
+  // 동의서 서명 링크(?consent=토큰)로 진입 시: 로그인 게이트 앞에서 서명 페이지 표시
+  const consentTok=new URLSearchParams(location.search).get('consent');
+  if(consentTok) return <ConsentSignPage token={consentTok}/>;
   if(!sb) return <Setup onDone={()=>location.reload()}/>;
   if(authed===null) return <div className="center"><div className="muted">불러오는 중...</div></div>;
   if(!authed) return <Login sb={sb} onIn={()=>setAuthed(true)}/>;
