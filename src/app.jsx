@@ -28,6 +28,14 @@ function getClient(){
 function pad(n){ return String(n).padStart(2,'0'); }
 // 금액 입력용: 숫자만 남기고 1,100,000 형식으로
 function fmtNum(v){ const d=String(v??'').replace(/\D/g,''); return d? parseInt(d).toLocaleString():''; }
+// 전화번호 입력 정규화: 010-1234-5678 형태로 자동 하이픈
+function fmtPhone(v){ let d=String(v??'').replace(/\D/g,'').slice(0,11);
+  if(d.length<4) return d;
+  if(d.length<8){ if(d.startsWith('02')) return d.slice(0,2)+'-'+d.slice(2); return d.slice(0,3)+'-'+d.slice(3); }
+  if(d.length===10) return d.slice(0,3)+'-'+d.slice(3,6)+'-'+d.slice(6);
+  return d.slice(0,3)+'-'+d.slice(3,7)+'-'+d.slice(7); }
+// 전화 뒷자리(비교용): 숫자만
+function phoneDigits(v){ return String(v??'').replace(/\D/g,''); }
 function ymd(d){ return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
 function fmtDate(s){ if(!s) return '-'; const d=new Date(s); return isNaN(d)?'-':`${d.getFullYear()}.${d.getMonth()+1}.${d.getDate()}`; }
 function fmtDT(s){ if(!s) return '-'; const d=new Date(s); if(isNaN(d))return '-'; return `${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
@@ -97,6 +105,11 @@ async function maybeBeforeDeleteSnapshot(sb){
   const ok=await snapshotNow(sb,'삭제 전');
   if(!ok) localStorage.removeItem(key);
 }
+
+// 오프사이트 백업(파일 다운로드) 리마인더 — 마지막 다운로드 시각 로컬 기록
+const LAST_BACKUP_KEY='gymlord_crm_last_backup';
+function markBackup(){ try{ localStorage.setItem(LAST_BACKUP_KEY, String(Date.now())); }catch(e){} }
+function daysSinceBackup(){ const v=Number(localStorage.getItem(LAST_BACKUP_KEY)||0); if(!v) return null; return Math.floor((Date.now()-v)/86400000); }
 
 async function loadActiveTrainerNames(sb){
   const [ms,ls,tc]=await Promise.all([
@@ -423,7 +436,7 @@ function EditMemberModal({sb,member,onClose,onSaved}){
           <select value={gender} onChange={e=>setGender(e.target.value)}><option value="">-</option><option>남성</option><option>여성</option></select></div>
       </div>
       <div className="row2">
-        <div className="field" style={{flex:1}}><label>전화번호</label><input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="010-0000-0000"/></div>
+        <div className="field" style={{flex:1}}><label>전화번호</label><input value={phone} onChange={e=>setPhone(fmtPhone(e.target.value))} placeholder="010-0000-0000" inputMode="numeric"/></div>
         <div className="field" style={{flex:1}}><label>생년월일</label><input type="date" value={birth} onChange={e=>setBirth(e.target.value)}/></div>
       </div>
       <div className="field"><label>주소</label><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="주소"/></div>
@@ -496,7 +509,7 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
   const [refund,setRefund]=useState(null);
   const [editPay,setEditPay]=useState(null);
   const [hist,setHist]=useState(null);
-  const [notes,setNotes]=useState(null),[noteBody,setNoteBody]=useState(''),[noteBusy,setNoteBusy]=useState(false);
+  const [notes,setNotes]=useState(null),[noteBody,setNoteBody]=useState(''),[noteBusy,setNoteBusy]=useState(false),[noteKind,setNoteKind]=useState('상담');
   const [taskModal,setTaskModal]=useState(null); // {initTitle}
   useEsc((reg||editMs||editMember||showHistory||lockerPick||collect||refund||editPay||taskModal) ? (()=>{}) : onClose);
   async function reload(){
@@ -516,10 +529,10 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
   async function addNote(){
     const body=noteBody.trim(); if(!body||noteBusy) return;
     setNoteBusy(true);
-    const {error}=await sb.from('member_notes').insert({member_id:member.id,body,author:myName||null});
+    const {error}=await sb.from('member_notes').insert({member_id:member.id,body,author:myName||null,kind:noteKind});
     setNoteBusy(false);
     if(error) return alert('노트 저장 실패: '+error.message+(/does not exist|schema cache/i.test(error.message)?' (db/notes_tasks.sql 실행 필요)':''));
-    logAct(sb,'노트 작성',member.name);
+    logAct(sb,'노트 작성',`${member.name}${noteKind?` · ${noteKind}`:''}`);
     setNoteBody(''); reload();
   }
   async function delNote(n){
@@ -670,15 +683,18 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
           <div className="mp-cardbox">
             <h3><span>📝 노트 {Array.isArray(notes)?`(${notes.length})`:''}</span>
               <button className="btn ghost sm" onClick={()=>setTaskModal({initTitle:''})}>＋ 할일</button></h3>
+            <div className="note-kinds">
+              {['상담','부상','기타'].map(k=><button key={k} type="button" className={'notekind-pick k-'+k+(noteKind===k?' on':'')} onClick={()=>setNoteKind(k)}>{k==='부상'?'⚠ 부상':k}</button>)}
+            </div>
             <div className="note-add">
-              <textarea rows={2} value={noteBody} onChange={e=>setNoteBody(e.target.value)} placeholder="상담 내용·부상·특이사항 기록 (날짜·작성자 자동 저장)"/>
+              <textarea rows={2} value={noteBody} onChange={e=>setNoteBody(e.target.value)} placeholder={noteKind==='부상'?'부상·통증 부위, 주의사항 (항상 상단 고정됩니다)':'상담 내용·특이사항 기록 (날짜·작성자 자동 저장)'}/>
               <button className="btn sm" disabled={noteBusy||!noteBody.trim()} onClick={addNote}>{noteBusy?'저장...':'저장'}</button>
             </div>
             {notes===null? <div className="muted">불러오는 중...</div> :
               notes==='na'? <div className="muted">노트 기능을 사용하려면 db/notes_tasks.sql을 Supabase SQL 에디터에서 실행하세요.</div> :
               notes.length===0? <div className="muted">아직 노트가 없습니다. 기록하면 시간순으로 쌓입니다.</div> :
-              notes.map(n=>(<div className="card" key={n.id} style={{padding:'9px 14px'}}>
-                <div style={{whiteSpace:'pre-wrap',fontSize:14}}>{n.body}</div>
+              notes.slice().sort((a,b)=>((b.kind==='부상')-(a.kind==='부상'))||(a.at<b.at?1:-1)).map(n=>(<div className={'card note-card'+(n.kind==='부상'?' injury':'')} key={n.id} style={{padding:'9px 14px'}}>
+                <div style={{whiteSpace:'pre-wrap',fontSize:14}}>{n.kind && <span className={'notekind k-'+n.kind}>{n.kind==='부상'?'⚠ 부상':n.kind}</span>}{n.body}</div>
                 <div className="kv" style={{marginTop:6}}>
                   <span className="muted" style={{fontSize:12}}>{n.author||'-'} · {fmtDT(n.at)}</span>
                   <span style={{whiteSpace:'nowrap'}}>
@@ -1077,7 +1093,14 @@ function AddMemberModal({sb,onClose,onSaved}){
   const [busy,setBusy]=useState(false),[err,setErr]=useState('');
   async function save(){
     if(!name.trim()) return setErr('이름을 입력하세요');
-    setBusy(true);
+    setBusy(true); setErr('');
+    // 중복 회원 방지: 같은 전화번호가 이미 있으면 경고(그래도 등록할지 확인)
+    const pd=phoneDigits(phone);
+    if(pd.length>=8){
+      const {data:dups}=await sb.from('members').select('id,name,phone').limit(2000);
+      const hit=(dups||[]).find(m=>phoneDigits(m.phone)===pd);
+      if(hit && !confirm(`이미 '${hit.name}' 회원이 이 번호(${hit.phone||''})로 등록되어 있습니다.\n\n동명이인이 아니라면 중복일 수 있어요.\n그래도 새로 등록할까요?`)){ setBusy(false); return; }
+    }
     const {data,error}=await sb.from('members').insert({
       name:name.trim(), phone:phone.trim()||null, gender:gender||null, birth:birth||null,
       address:address.trim()||null, manager:manager.trim()||null, memo:memo.trim()||null,
@@ -1099,7 +1122,7 @@ function AddMemberModal({sb,onClose,onSaved}){
           <select value={gender} onChange={e=>setGender(e.target.value)}><option value="">-</option><option>남성</option><option>여성</option></select></div>
       </div>
       <div className="row2">
-        <div className="field" style={{flex:1}}><label>전화번호</label><input value={phone} onChange={e=>setPhone(e.target.value)} placeholder="010-0000-0000"/></div>
+        <div className="field" style={{flex:1}}><label>전화번호</label><input value={phone} onChange={e=>setPhone(fmtPhone(e.target.value))} placeholder="010-0000-0000" inputMode="numeric"/></div>
         <div className="field" style={{flex:1}}><label>생년월일</label><input type="date" value={birth} onChange={e=>setBirth(e.target.value)}/></div>
       </div>
       <div className="field"><label>주소</label><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="주소"/></div>
@@ -2062,8 +2085,8 @@ function LockersView({sb}){
 }
 
 // ---------- 홈 대시보드 ----------
-function DashboardView({sb}){
-  const {can}=usePerm();
+function DashboardView({sb,onNav}){
+  const {can,role}=usePerm();
   const [members,setMembers]=useState(null);
   const [ms,setMs]=useState([]);
   const [sel,setSel]=useState(null);
@@ -2159,8 +2182,13 @@ function DashboardView({sb}){
   // B1: 위젯 행에서 바로 팔로업 할일 만들기 (회원 열지 않고 원클릭)
   const TaskBtn=({mid,title})=> memById[mid] ? <button className="taskmini" title="이 회원 팔로업 할일 추가"
     onClick={e=>{e.stopPropagation(); setTaskFor({member:memById[mid],initTitle:title});}}>＋할일</button> : null;
+  const dsb=daysSinceBackup();
   if(members===null) return <div className="empty">불러오는 중...</div>;
   return (<div>
+    {can('logs') && (dsb===null||dsb>=7) && <div className="backup-remind" onClick={()=>onNav&&onNav('logs')} style={{cursor:'pointer'}}>
+      <span>💾 {dsb===null?'데이터를 아직 파일로 백업한 적이 없어요.':`마지막 파일 백업이 ${dsb}일 전이에요.`} 사고에 대비해 파일 백업을 PC에 보관하세요.</span>
+      <button className="btn sm" onClick={e=>{e.stopPropagation(); onNav&&onNav('logs');}}>백업하러 가기 →</button>
+    </div>}
     <div className="stats">
       <div className="stat"><div className="n">{counts.전체}</div><div className="l">전체 회원</div></div>
       <div className="stat"><div className="n" style={{color:'#7dc4a0'}}>{counts.활성}</div><div className="l">활성 회원</div></div>
@@ -2640,6 +2668,7 @@ function SnapshotPanel({sb}){
     const blob=new Blob([JSON.stringify({exported_at:data.taken_at,app:'GYMLORD CRM',tables:data.tables})],{type:'application/json'});
     const u=URL.createObjectURL(blob),a=document.createElement('a');
     a.href=u; a.download=`gymlord_백업_${ymd(new Date(data.taken_at))}.json`; a.click(); URL.revokeObjectURL(u);
+    markBackup();
   }
   async function restore(s){
     if(!confirm(`⚠️ ${fmt(s.taken_at)} (${s.label||'-'}) 시점으로 되돌립니다.\n\n· 지금의 회원·회원권·수업·결제·락커·상품 데이터가 이 시점 상태로 전부 교체됩니다.\n· 이후 추가·수정한 내용은 사라집니다.\n· (복원 직전 현재 상태는 자동으로 한 장 백업됩니다.)\n\n계속할까요?`)) return;
@@ -2682,44 +2711,57 @@ function SnapshotPanel({sb}){
 function LogsView({sb}){
   const [rows,setRows]=useState(null);
   const [q,setQ]=useState('');
+  const [from,setFrom]=useState(''),[to,setTo]=useState(''),[actor,setActor]=useState('');
   const [backing,setBacking]=useState(false);
   async function load(){ const {data}=await sb.from('logs').select('*').order('at',{ascending:false}).limit(500); setRows(data||[]); }
   // 전체 백업: 모든 테이블을 JSON 파일 하나로 다운로드 (복원·보관용)
   async function backupAll(){
     setBacking(true);
     try{
-      const tables=['members','memberships','lessons','payments','lockers','products','trainer_colors','logs'];
-      const dump={exported_at:new Date().toISOString(), app:'GYMLORD CRM', tables:{}};
-      for(const t of tables){
-        let all=[], from=0;
-        const oc = t==='trainer_colors' ? 'name' : 'id';
-        while(true){ const {data,error}=await sb.from(t).select('*').order(oc,{ascending:true}).range(from,from+999);
-          if(error) throw new Error(t+': '+error.message);
-          all=all.concat(data||[]); if(!data||data.length<1000) break; from+=1000; }
-        dump.tables[t]=all;
-      }
+      const tables=await dumpAllTables(sb);   // 전체 테이블(신규 노트·할일·정산율 포함)
+      const dump={exported_at:new Date().toISOString(), app:'GYMLORD CRM', tables};
       const blob=new Blob([JSON.stringify(dump)],{type:'application/json'});
       const u=URL.createObjectURL(blob), a=document.createElement('a');
       a.href=u; a.download=`gymlord_백업_${ymd(new Date())}.json`; a.click(); URL.revokeObjectURL(u);
-      logAct(sb,'전체 백업',Object.entries(dump.tables).map(([k,v])=>`${k} ${v.length}`).join(', '));
+      markBackup();
+      logAct(sb,'전체 백업',Object.entries(tables).map(([k,v])=>`${k} ${v.length}`).join(', '));
     }catch(e){ alert('백업 실패: '+e.message); }
     setBacking(false);
   }
   useEffect(()=>{ load(); },[]);
   const fmtLog=s=>{ const d=new Date(s); return isNaN(d)?'-':`${d.getFullYear()}.${d.getMonth()+1}.${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const actors=useMemo(()=>[...new Set((rows||[]).map(r=>r.actor).filter(Boolean))].sort(),[rows]);
   const filtered=(rows||[]).filter(r=>{
+    if(actor && r.actor!==actor) return false;
+    const day=(r.at||'').slice(0,10);
+    if(from && day<from) return false;
+    if(to && day>to) return false;
     if(!q.trim()) return true;
     const s=`${r.action||''} ${r.detail||''} ${r.actor||''}`.toLowerCase();
     return q.toLowerCase().split(/\s+/).every(w=>s.includes(w));
   });
+  const anyFilter=q.trim()||actor||from||to;
+  const dsb=daysSinceBackup();
   return (<div>
+    {(dsb===null||dsb>=7) && <div className="backup-remind">
+      <span>💾 {dsb===null?'아직 파일로 백업한 적이 없어요.':`마지막 파일 백업이 ${dsb}일 전이에요.`} 주 1회 파일 백업을 PC에 보관하는 걸 권장합니다.</span>
+      <button className="btn sm" disabled={backing} onClick={backupAll}>{backing?'백업 중...':'⤓ 지금 백업'}</button>
+    </div>}
     <SnapshotPanel sb={sb}/>
-    <div className="bar" style={{marginTop:18}}>
+    <div className="bar" style={{marginTop:18,flexWrap:'wrap'}}>
       <input className="search" placeholder="로그 검색 — 예: 강수빈 / 삭제 / 락커 / 미수금" value={q} onChange={e=>setQ(e.target.value)}/>
+      <input type="date" value={from} onChange={e=>setFrom(e.target.value)} title="시작일" className="logfilter"/>
+      <span className="muted">~</span>
+      <input type="date" value={to} onChange={e=>setTo(e.target.value)} title="종료일" className="logfilter"/>
+      <select value={actor} onChange={e=>setActor(e.target.value)} className="logfilter">
+        <option value="">직원 전체</option>
+        {actors.map(a=><option key={a} value={a}>{(a||'').split('@')[0]}</option>)}
+      </select>
+      {anyFilter && <button className="btn ghost sm" onClick={()=>{setQ('');setFrom('');setTo('');setActor('');}}>필터 초기화</button>}
       <button className="btn ghost sm" onClick={load}>새로고침</button>
       <button className="btn ghost sm" disabled={backing} onClick={backupAll}>{backing?'백업 중...':'⤓ 전체 백업'}</button>
     </div>
-    {rows!==null && <div className="muted" style={{fontSize:13,marginBottom:10}}>{q.trim()? `검색 결과 ${filtered.length}건` : `최근 ${rows.length}건`} <span style={{opacity:.7}}>· 최근 500건까지 표시</span></div>}
+    {rows!==null && <div className="muted" style={{fontSize:13,marginBottom:10}}>{anyFilter? `필터 결과 ${filtered.length}건` : `최근 ${rows.length}건`} <span style={{opacity:.7}}>· 최근 500건까지 표시{dsb!==null?` · 마지막 파일 백업 ${dsb===0?'오늘':dsb+'일 전'}`:''}</span></div>}
     {rows===null? <div className="empty">불러오는 중...</div> :
      filtered.length===0? <div className="empty">{q.trim()?'검색 결과가 없습니다':'아직 기록된 로그가 없습니다. 앞으로의 작업(등록·수정·삭제 등)이 자동 기록됩니다.'}</div> :
      <div className="list" style={{marginBottom:40}}>
@@ -2971,6 +3013,37 @@ function GlobalSearch({sb,onPick}){
   </div>);
 }
 
+// ---------- 비밀번호 변경 (직원 셀프) ----------
+function PasswordModal({sb,onClose}){
+  useEsc(onClose);
+  const [pw,setPw]=useState(''),[pw2,setPw2]=useState('');
+  const [busy,setBusy]=useState(false),[err,setErr]=useState(''),[done,setDone]=useState(false);
+  async function save(){
+    if(pw.length<6){ setErr('비밀번호는 6자 이상이어야 합니다.'); return; }
+    if(pw!==pw2){ setErr('두 비밀번호가 일치하지 않습니다.'); return; }
+    setBusy(true); setErr('');
+    const {error}=await sb.auth.updateUser({password:pw});
+    setBusy(false);
+    if(error){ setErr('변경 실패: '+error.message); return; }
+    setDone(true);
+  }
+  return (
+    <div className="modal-ov" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()} style={{maxWidth:380}}>
+      <div className="mhead"><h3>비밀번호 변경</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+      {done? <div style={{padding:'16px 0',textAlign:'center'}}><div style={{fontSize:34,marginBottom:8}}>✅</div><b>변경되었습니다</b>
+        <div className="muted" style={{fontSize:13,marginTop:6}}>다음 로그인부터 새 비밀번호를 사용하세요.</div>
+        <button className="btn" style={{marginTop:14,width:'100%'}} onClick={onClose}>닫기</button></div> : <>
+        <p className="muted" style={{fontSize:12,marginTop:0}}>본인 로그인 계정의 비밀번호를 바꿉니다.</p>
+        <div className="field"><label>새 비밀번호</label><input type="password" autoFocus value={pw} onChange={e=>setPw(e.target.value)} placeholder="6자 이상"/></div>
+        <div className="field"><label>새 비밀번호 확인</label><input type="password" value={pw2} onChange={e=>setPw2(e.target.value)}
+          onKeyDown={e=>{ if(e.key==='Enter') save(); }} placeholder="한 번 더 입력"/></div>
+        <button className="btn" style={{width:'100%'}} disabled={busy} onClick={save}>{busy?'변경 중...':'변경'}</button>
+        <div className="err">{err}</div>
+      </>}
+    </div></div>
+  );
+}
+
 const NAV_ICONS={
   home:(<svg {..._ni}><path d="M3 11.4 12 4l9 7.4"/><path d="M5.6 9.9V20h12.8V9.9"/><path d="M9.8 20v-5.6h4.4V20"/></svg>),
   members:(<svg {..._ni}><circle cx="12" cy="7.8" r="3.6"/><path d="M4.6 20c.7-4.1 3.7-6.1 7.4-6.1s6.7 2 7.4 6.1"/></svg>),
@@ -2987,6 +3060,7 @@ function App(){
   const [view,setView]=useState('home');
   const [me,setMe]=useState(null); // 내 staff 행 {role,perms,email,name}
   const [showPolicy,setShowPolicy]=useState(false);
+  const [showPw,setShowPw]=useState(false);
   const [globalSel,setGlobalSel]=useState(null); // 통합 검색으로 연 회원
   useEffect(()=>{ if(!sb)return; sb.auth.getSession().then(({data})=>setAuthed(!!data.session)); },[]);
   useEffect(()=>{ if(authed && sb) maybeDailySnapshot(sb); },[authed]);
@@ -3039,7 +3113,10 @@ function App(){
         </nav>
         <div className="side-spacer"/>
         <div className="side-me">{me.name||me.email}<small>{isMaster?'마스터':'프리랜서'}</small></div>
-        <button className="link" style={{margin:'0 0 8px',fontSize:12,alignSelf:'flex-start'}} onClick={()=>setShowPolicy(true)}>개인정보 처리방침</button>
+        <div style={{display:'flex',gap:10,margin:'0 0 8px'}}>
+          <button className="link" style={{margin:0,fontSize:12}} onClick={()=>setShowPw(true)}>비밀번호 변경</button>
+          <button className="link" style={{margin:0,fontSize:12}} onClick={()=>setShowPolicy(true)}>개인정보 처리방침</button>
+        </div>
         <button className="btn ghost sm" style={{width:'100%'}} onClick={logout}>로그아웃</button>
       </aside>
       <button className="mob-logout" onClick={logout} title="로그아웃" aria-label="로그아웃">
@@ -3049,7 +3126,7 @@ function App(){
         </svg>
       </button>
       <main className="main">
-        {shownView==='home'? <DashboardView sb={sb}/> :
+        {shownView==='home'? <DashboardView sb={sb} onNav={setView}/> :
          shownView==='members'? <MembersView sb={sb}/> :
          shownView==='calendar'? <CalendarView sb={sb}/> :
          shownView==='lockers'? <LockersView sb={sb}/> :
@@ -3058,6 +3135,7 @@ function App(){
          shownView==='staff'? <StaffAdmin sb={sb}/> : <LogsView sb={sb}/>}
       </main>
       {showPolicy && <PrivacyModal onClose={()=>setShowPolicy(false)}/>}
+      {showPw && <PasswordModal sb={sb} onClose={()=>setShowPw(false)}/>}
       {globalSel && <Detail sb={sb} member={globalSel} onClose={()=>setGlobalSel(null)}/>}
     </div>
     </PermCtx.Provider>
