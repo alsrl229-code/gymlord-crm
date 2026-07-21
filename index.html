@@ -92,6 +92,29 @@
   .dash-row{display:flex;justify-content:space-between;align-items:center;gap:10px;padding:9px 2px;border-bottom:1px solid var(--line);cursor:pointer}
   .dash-row:last-child{border-bottom:none}
   .dash-row:hover b{color:var(--brass)}
+  /* 위젯 행에서 바로 할일 (B1) */
+  .dash-rt{display:flex;align-items:center;gap:8px;white-space:nowrap}
+  .taskmini{background:transparent;border:1px solid var(--brassline);color:var(--brass);border-radius:7px;
+    font-size:11px;padding:2px 7px;cursor:pointer;opacity:0;transition:opacity .15s,background .15s}
+  .dash-row:hover .taskmini{opacity:1}
+  .taskmini:hover{background:rgba(176,141,87,.14)}
+  @media(hover:none){ .taskmini{opacity:1} }
+  /* 통합 검색 (B3) */
+  .gsearch{position:relative;padding:0 8px 10px}
+  .gsearch>input{width:100%;box-sizing:border-box;background:var(--forest);border:1px solid var(--line);
+    border-radius:9px;padding:8px 11px;color:var(--cream);font-size:13px}
+  .gsearch>input::placeholder{color:var(--muted)}
+  .gsearch-res{position:absolute;left:8px;right:8px;top:100%;z-index:40;margin-top:2px;
+    background:var(--forest2);border:1px solid var(--brassline);border-radius:10px;overflow:hidden;
+    box-shadow:0 12px 30px rgba(0,0,0,.45)}
+  .gsearch-item{display:flex;flex-direction:column;gap:1px;width:100%;text-align:left;background:transparent;
+    border:none;border-bottom:1px solid var(--line);padding:8px 12px;cursor:pointer;color:var(--cream)}
+  .gsearch-item:last-child{border-bottom:none}
+  .gsearch-item:hover{background:rgba(176,141,87,.1)}
+  .gsearch-item b{font-size:13px}
+  .gsearch-item small{color:var(--muted);font-size:11px}
+  .gsearch-empty{padding:10px 12px;color:var(--muted);font-size:12px}
+  @media(max-width:860px){ .gsearch{display:none} }
   /* 회원 노트 + 할일 (Gymdesk 벤치마킹) */
   .note-add{display:flex;gap:8px;align-items:stretch;margin-bottom:12px}
   .note-add textarea{flex:1;background:var(--forest);border:1px solid var(--line);border-radius:10px;padding:9px 12px;color:var(--cream);font-size:13px;font-family:inherit;resize:vertical;min-height:44px}
@@ -432,6 +455,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=64"></script>
+<script src="app.bundle.js?v=65"></script>
 </body>
 </html>

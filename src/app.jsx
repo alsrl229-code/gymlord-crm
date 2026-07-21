@@ -2070,6 +2070,7 @@ function DashboardView({sb}){
   const [lessons,setLessons]=useState([]);
   const [tasks,setTasks]=useState(null); // null=로딩, 'na'=notes_tasks.sql 미실행
   const [taskModal,setTaskModal]=useState(false);
+  const [taskFor,setTaskFor]=useState(null); // {member, initTitle} — 위젯 행에서 만든 회원 할일
   async function load(){
     try{ await sb.rpc('expire_overdue'); }catch(e){}
     const cut=new Date(Date.now()-42*86400000).toISOString();
@@ -2155,6 +2156,9 @@ function DashboardView({sb}){
   (members||[]).forEach(m=>{ if(m.status==='활성')counts.활성++; });
   const nm=id=>(memById[id]&&memById[id].name)||'-';
   const openMember=id=>{ const m=memById[id]; if(m) setSel(m); };
+  // B1: 위젯 행에서 바로 팔로업 할일 만들기 (회원 열지 않고 원클릭)
+  const TaskBtn=({mid,title})=> memById[mid] ? <button className="taskmini" title="이 회원 팔로업 할일 추가"
+    onClick={e=>{e.stopPropagation(); setTaskFor({member:memById[mid],initTitle:title});}}>＋할일</button> : null;
   if(members===null) return <div className="empty">불러오는 중...</div>;
   return (<div>
     <div className="stats">
@@ -2191,9 +2195,12 @@ function DashboardView({sb}){
           risk.slice(0,15).map(r=>{ const m=memById[r.id]; return (
             <div className="dash-row" key={r.id} onClick={()=>openMember(r.id)}>
               <div><b>{m.name}</b> <span className="muted" style={{fontSize:13}}>· {m.assigned_trainer||'담당 미지정'}</span></div>
-              {r.type==='none'
-                ? <span style={{color:'#d98b7a',fontWeight:700,fontSize:13}}>{r.days==null?'6주+':r.days+'일'} 무출석</span>
-                : <span style={{color:'#e0a23c',fontWeight:700,fontSize:13}}>급감 · 2주 {r.recent14}회 (평소 {Math.round(r.avg14)}회)</span>}
+              <span className="dash-rt">
+                {r.type==='none'
+                  ? <span style={{color:'#d98b7a',fontWeight:700,fontSize:13}}>{r.days==null?'6주+':r.days+'일'} 무출석</span>
+                  : <span style={{color:'#e0a23c',fontWeight:700,fontSize:13}}>급감 · 2주 {r.recent14}회 (평소 {Math.round(r.avg14)}회)</span>}
+                <TaskBtn mid={r.id} title={`${m.name} 이탈 위험 — 연락`}/>
+              </span>
             </div>); })}
         {risk.length>0 && <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>예정된 예약 없이 수업이 끊긴 회원입니다. 연락해 보세요.</p>}
       </div>
@@ -2202,7 +2209,8 @@ function DashboardView({sb}){
         {soon.length===0? <div className="muted">14일 내 만료 예정인 회원권이 없습니다</div> :
           soon.slice(0,15).map(({m,d})=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.member_id)}>
             <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name} · ~{fmtDate(m.end_date)}</span></div>
-            <span className={'dday'+(d<=3?' expired':'')}>{d===0?'오늘 만료':'D-'+d}</span>
+            <span className="dash-rt"><span className={'dday'+(d<=3?' expired':'')}>{d===0?'오늘 만료':'D-'+d}</span>
+              <TaskBtn mid={m.member_id} title={`${nm(m.member_id)} 재등록 상담 (만료 ${fmtDate(m.end_date)})`}/></span>
           </div>))}
       </div>
       {can('sales') && <div className="mp-cardbox">
@@ -2210,7 +2218,8 @@ function DashboardView({sb}){
         {unpaid.length===0? <div className="muted">미수금이 없습니다</div> :
           unpaid.slice(0,15).map(m=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.member_id)}>
             <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name}</span></div>
-            <span style={{color:'#d98b7a',fontWeight:700}}>{m.unpaid.toLocaleString()}원</span>
+            <span className="dash-rt"><span style={{color:'#d98b7a',fontWeight:700}}>{m.unpaid.toLocaleString()}원</span>
+              <TaskBtn mid={m.member_id} title={`${nm(m.member_id)} 미수금 ${m.unpaid.toLocaleString()}원 수납 안내`}/></span>
           </div>))}
       </div>}
       <div className="mp-cardbox">
@@ -2234,7 +2243,8 @@ function DashboardView({sb}){
         {lowCount.length===0? <div className="muted">잔여 3회 이하인 회원권이 없습니다</div> :
           lowCount.slice(0,15).map(m=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.member_id)}>
             <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name}{m.trainer?` · ${m.trainer}`:''}</span></div>
-            <span style={{color:(m.remaining_count||0)===0?'#d98b7a':'#e0a23c',fontWeight:700}}>잔여 {m.remaining_count||0}/{m.total_count}</span>
+            <span className="dash-rt"><span style={{color:(m.remaining_count||0)===0?'#d98b7a':'#e0a23c',fontWeight:700}}>잔여 {m.remaining_count||0}/{m.total_count}</span>
+              <TaskBtn mid={m.member_id} title={`${nm(m.member_id)} 재등록 상담 (잔여 ${m.remaining_count||0}회)`}/></span>
           </div>))}
         {lowCount.length>0 && <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>재등록 안내가 필요한 회원입니다.</p>}
       </div>
@@ -2243,7 +2253,8 @@ function DashboardView({sb}){
         {churn.length===0? <div className="muted">최근 30일 내 만료 후 미재등록 회원이 없습니다<br/><span style={{fontSize:12}}>(앞으로 회원권이 만료되면 여기에 표시됩니다)</span></div> :
           churn.slice(0,15).map(m=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.member_id)}>
             <div><b>{nm(m.member_id)}</b> <span className="muted" style={{fontSize:13}}>· {m.product_name}</span></div>
-            <span className="muted" style={{fontSize:13}}>{fmtDate(m.end_date)} 만료</span>
+            <span className="dash-rt"><span className="muted" style={{fontSize:13}}>{fmtDate(m.end_date)} 만료</span>
+              <TaskBtn mid={m.member_id} title={`${nm(m.member_id)} 재등록 권유 (${fmtDate(m.end_date)} 만료)`}/></span>
           </div>))}
       </div>
       <div className="mp-cardbox">
@@ -2268,6 +2279,7 @@ function DashboardView({sb}){
     </div>
     {sel && <Detail sb={sb} member={sel} onClose={()=>{setSel(null);load();}}/>}
     {taskModal && <TaskModal sb={sb} member={null} onClose={()=>setTaskModal(false)} onSaved={()=>{setTaskModal(false);load();}}/>}
+    {taskFor && <TaskModal sb={sb} member={taskFor.member} initTitle={taskFor.initTitle} onClose={()=>setTaskFor(null)} onSaved={()=>{setTaskFor(null);load();}}/>}
   </div>);
 }
 
@@ -2925,6 +2937,40 @@ function ConsentSignPage({token}){
   );
 }
 
+// ---------- 통합 검색 (사이드바) ----------
+function GlobalSearch({sb,onPick}){
+  const [q,setQ]=useState('');
+  const [res,setRes]=useState(null);
+  const timer=useRef();
+  const box=useRef();
+  useEffect(()=>{
+    clearTimeout(timer.current);
+    const raw=q.trim().replace(/[,%()*]/g,' ').trim();
+    if(!raw){ setRes(null); return; }
+    timer.current=setTimeout(async()=>{
+      const digits=raw.replace(/\D/g,'');
+      let query=sb.from('members').select('id,name,phone,status,assigned_trainer,birth,gender,address,memo,tags,reg_date,manager,consent_at,consent_marketing,cumulative_payment').order('name').limit(8);
+      if(digits.length>=2 && /^[0-9]+$/.test(raw.replace(/\s/g,''))) query=query.ilike('phone',`%${digits}%`);
+      else query=query.or(`name.ilike.%${raw}%,phone.ilike.%${digits||raw}%`);
+      const {data}=await query;
+      setRes(data||[]);
+    },250);
+  },[q]);
+  useEffect(()=>{ const h=e=>{ if(box.current && !box.current.contains(e.target)) setRes(null); };
+    document.addEventListener('mousedown',h); return ()=>document.removeEventListener('mousedown',h); },[]);
+  return (<div className="gsearch" ref={box}>
+    <input value={q} onChange={e=>setQ(e.target.value)} placeholder="회원 검색 (이름·전화)"
+      onKeyDown={e=>{ if(e.key==='Escape'){ setQ(''); setRes(null); } if(e.key==='Enter'&&res&&res.length){ onPick(res[0]); setQ(''); setRes(null); } }}/>
+    {res!==null && <div className="gsearch-res">
+      {res.length===0? <div className="gsearch-empty">검색 결과 없음</div> :
+        res.map(m=>(<button key={m.id} className="gsearch-item" onClick={()=>{ onPick(m); setQ(''); setRes(null); }}>
+          <b>{m.name}</b>
+          <small>{m.phone||'-'}{m.assigned_trainer?' · '+m.assigned_trainer:''}</small>
+        </button>))}
+    </div>}
+  </div>);
+}
+
 const NAV_ICONS={
   home:(<svg {..._ni}><path d="M3 11.4 12 4l9 7.4"/><path d="M5.6 9.9V20h12.8V9.9"/><path d="M9.8 20v-5.6h4.4V20"/></svg>),
   members:(<svg {..._ni}><circle cx="12" cy="7.8" r="3.6"/><path d="M4.6 20c.7-4.1 3.7-6.1 7.4-6.1s6.7 2 7.4 6.1"/></svg>),
@@ -2941,6 +2987,7 @@ function App(){
   const [view,setView]=useState('home');
   const [me,setMe]=useState(null); // 내 staff 행 {role,perms,email,name}
   const [showPolicy,setShowPolicy]=useState(false);
+  const [globalSel,setGlobalSel]=useState(null); // 통합 검색으로 연 회원
   useEffect(()=>{ if(!sb)return; sb.auth.getSession().then(({data})=>setAuthed(!!data.session)); },[]);
   useEffect(()=>{ if(authed && sb) maybeDailySnapshot(sb); },[authed]);
   useEffect(()=>{
@@ -2983,6 +3030,7 @@ function App(){
       <aside className="side">
         <div className="logo">GYMLORD<small>MEMBER OS</small></div>
         <div className="side-orn"><Ornament width={96}/></div>
+        {can('members') && <GlobalSearch sb={sb} onPick={setGlobalSel}/>}
         <nav className="side-nav">
           {menu.map(([k,lbl])=>(
             <button key={k} className={'nav-it'+(shownView===k?' on':'')} onClick={()=>setView(k)}>
@@ -3010,6 +3058,7 @@ function App(){
          shownView==='staff'? <StaffAdmin sb={sb}/> : <LogsView sb={sb}/>}
       </main>
       {showPolicy && <PrivacyModal onClose={()=>setShowPolicy(false)}/>}
+      {globalSel && <Detail sb={sb} member={globalSel} onClose={()=>setGlobalSel(null)}/>}
     </div>
     </PermCtx.Provider>
   );
