@@ -3102,7 +3102,7 @@ function App(){
     <PermCtx.Provider value={{role:me.role, perms:me.perms||{}, can, email:me.email, name:me.name}}>
     <div className="shell">
       <aside className="side">
-        <div className="logo">GYMLORD<small>MEMBER OS</small></div>
+        <div className="logo logo-home" title="홈으로" onClick={()=>{ setView('home'); setGlobalSel(null); }}>GYMLORD<small>MEMBER OS</small></div>
         <div className="side-orn"><Ornament width={96}/></div>
         {can('members') && <GlobalSearch sb={sb} onPick={setGlobalSel}/>}
         <nav className="side-nav">
@@ -3136,7 +3136,7 @@ function App(){
       </main>
       {showPolicy && <PrivacyModal onClose={()=>setShowPolicy(false)}/>}
       {showPw && <PasswordModal sb={sb} onClose={()=>setShowPw(false)}/>}
-      {globalSel && <Detail sb={sb} member={globalSel} onClose={()=>setGlobalSel(null)}/>}
+      {globalSel && <Detail key={globalSel.id} sb={sb} member={globalSel} onClose={()=>setGlobalSel(null)}/>}
     </div>
     </PermCtx.Provider>
   );
