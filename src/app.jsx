@@ -3107,7 +3107,7 @@ function App(){
         {can('members') && <GlobalSearch sb={sb} onPick={setGlobalSel}/>}
         <nav className="side-nav">
           {menu.map(([k,lbl])=>(
-            <button key={k} className={'nav-it'+(shownView===k?' on':'')} onClick={()=>setView(k)}>
+            <button key={k} className={'nav-it'+(shownView===k?' on':'')} onClick={()=>{ setView(k); setGlobalSel(null); }}>
               <span className="nav-ic">{NAV_ICONS[k]}</span>{lbl}
             </button>))}
         </nav>
