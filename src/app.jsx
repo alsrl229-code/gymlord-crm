@@ -62,6 +62,24 @@ async function logAct(sb,action,detail){
   }catch(e){}
 }
 
+// ---------- 전체 조회 (1000행 상한 회피) ----------
+// Supabase/PostgREST는 select에 범위를 안 주면 1000행에서 "조용히" 잘린다(에러도 경고도 없음).
+// 회원·회원권·결제가 1000건을 넘는 순간 매출·리포트가 틀린 값으로 계산되므로,
+// 전체를 훑는 조회는 반드시 이 함수를 통해 끝까지 가져온다.
+//   make: 매번 새 쿼리를 만들어 주는 함수 — ()=>sb.from('payments').select('*').order('id')
+//   정렬이 유일하지 않으면 페이지 경계에서 행이 중복·누락될 수 있어 id 보조정렬을 함께 건다.
+async function fetchAll(make){
+  let all=[], from=0;
+  while(true){
+    const {data,error}=await make().range(from,from+999);
+    if(error) return {data:null,error};
+    all=all.concat(data||[]);
+    if(!data||data.length<1000) break;
+    from+=1000;
+  }
+  return {data:all,error:null};
+}
+
 // ---------- 자동 백업(스냅샷) ----------
 const SNAP_TABLES=['members','memberships','lessons','payments','lockers','products','trainer_colors','logs','member_notes','tasks','trainer_rates'];
 const SNAP_OPTIONAL=new Set(['member_notes','tasks','trainer_rates']); // 부가 테이블: SQL 미실행/권한 없음이어도 백업은 계속
@@ -348,7 +366,7 @@ function EditMembershipModal({sb,ms,memberName,onClose,onSaved}){
       onSaved();
     }
   }
-  async function openXfer(){ setXfer(v=>!v); if(!members.length){ const {data}=await sb.from('members').select('id,name,phone').order('name'); setMembers(data||[]); } }
+  async function openXfer(){ setXfer(v=>!v); if(!members.length){ const {data}=await fetchAll(()=>sb.from('members').select('id,name,phone').order('name').order('id')); setMembers(data||[]); } }
   async function transferTo(m){
     if(!confirm(`이 회원권을 '${m.name}'님에게 양도할까요?`)) return;
     const {error}=await sb.from('memberships').update({member_id:m.id}).eq('id',ms.id);
@@ -840,7 +858,7 @@ function LockerPickModal({sb,member,onClose,onSaved}){
   const [busy,setBusy]=useState(false),[err,setErr]=useState('');
   useEffect(()=>{
     sb.from('lockers').select('*').eq('room','개인라커').order('number').then(({data})=>setLockers(data||[]));
-    sb.from('members').select('id,name').order('name').then(({data})=>setMembers(data||[]));
+    fetchAll(()=>sb.from('members').select('id,name').order('name').order('id')).then(({data})=>setMembers(data||[]));
   },[]);
   const nameById=useMemo(()=>{const m={};members.forEach(x=>m[x.id]=x.name);return m;},[members]);
   function st(l){ if(l.status==='고장')return 'broken'; if(!l.member_id)return 'empty'; if(String(l.member_id)===String(member.id))return 'mine'; return 'taken'; }
@@ -967,8 +985,8 @@ function MembersView({sb}){
   const [checked,setChecked]=useState(()=>new Set());
   const [msAll,setMsAll]=useState([]);
   async function load(){
-    const {data,error}=await sb.from('members').select('*').order('name'); if(!error) setRows(data);
-    const m=await sb.from('memberships').select('member_id,status,end_date'); setMsAll(m.data||[]);
+    const {data,error}=await fetchAll(()=>sb.from('members').select('*').order('name').order('id')); if(!error) setRows(data);
+    const m=await fetchAll(()=>sb.from('memberships').select('member_id,status,end_date').order('id')); setMsAll(m.data||[]);
   }
   useEffect(()=>{ load(); },[]);
   // 회원별 임박(활성 회원권 D-14 이내) / 홀딩(홀딩 회원권 보유) 플래그
@@ -1662,7 +1680,7 @@ function CalendarView({sb}){
     loadLessons();
   })(); },[cur,mode,anchor,isMobile]);
   useEffect(()=>{
-    sb.from('members').select('id,name,phone,status').order('name').then(({data})=>setMembers(data||[]));
+    fetchAll(()=>sb.from('members').select('id,name,phone,status').order('name').order('id')).then(({data})=>setMembers(data||[]));
     sb.from('lessons').select('trainer').not('trainer','is',null).limit(5000).then(({data})=>setTrainerPool([...new Set((data||[]).map(r=>r.trainer).filter(Boolean))]));
     sb.from('trainer_colors').select('name,color').then(({data,error})=>{ if(!error&&data){ const m={}; data.forEach(r=>m[r.name]=r.color); setColorOverrides(m); } });
   },[]);
@@ -2033,7 +2051,7 @@ function LockersView({sb}){
   const [assign,setAssign]=useState(null),[detail,setDetail]=useState(null),[adding,setAdding]=useState(false);
   const [tab,setTab]=useState('전체');
   async function load(){ const {data}=await sb.from('lockers').select('*').eq('room',room).order('number'); setLockers(data||[]); }
-  useEffect(()=>{ load(); sb.from('members').select('id,name,phone').order('name').then(({data})=>setMembers(data||[])); },[]);
+  useEffect(()=>{ load(); fetchAll(()=>sb.from('members').select('id,name,phone').order('name').order('id')).then(({data})=>setMembers(data||[])); },[]);
   const memberById=useMemo(()=>{const m={};members.forEach(x=>m[x.id]=x);return m;},[members]);
   const memberName=id=>(memberById[id]&&memberById[id].name)||'';
   const today=ymd(new Date());
@@ -2096,10 +2114,14 @@ function DashboardView({sb,onNav}){
   const [taskFor,setTaskFor]=useState(null); // {member, initTitle} — 위젯 행에서 만든 회원 할일
   async function load(){
     try{ await sb.rpc('expire_overdue'); }catch(e){}
+    // 지난 예약 자동완료 + 회차차감. 캘린더 탭에서만 돌던 것을 홈에서도 돌린다.
+    // (캘린더를 안 열면 수업이 끝나도 '예약'으로 남아 회차가 안 깎이고,
+    //  그 결과 잔여회차가 실제보다 많게 보여 재등록 대상 추출이 늦어졌다)
+    try{ await sb.rpc('auto_complete_overdue'); }catch(e){}
     const cut=new Date(Date.now()-42*86400000).toISOString();
     const [a,b,c,d]=await Promise.all([
-      sb.from('members').select('*').order('name'),
-      sb.from('memberships').select('*'),
+      fetchAll(()=>sb.from('members').select('*').order('name').order('id')),
+      fetchAll(()=>sb.from('memberships').select('*').order('id')),
       sb.from('lessons').select('member_id,start_at,status').gte('start_at',cut).not('member_id','is',null).limit(5000),
       sb.from('tasks').select('*').eq('done',false).order('due_date',{ascending:true,nullsFirst:false}).limit(100)
     ]);
@@ -2323,9 +2345,9 @@ function SalesView({sb}){
   const [rates,setRates]=useState({});   // 강사별 정산율% (trainer_rates, 마스터 전용)
   const rateTimer=useRef({});
   useEffect(()=>{
-    sb.from('payments').select('*').order('paid_at',{ascending:false}).then(({data})=>setPays(data||[]));
-    sb.from('members').select('id,name').then(({data})=>setMembers(data||[]));
-    sb.from('memberships').select('id,member_id,unpaid,trainer,status,start_date,end_date').then(({data})=>{ setMsAll(data||[]); setUnpaidSum((data||[]).reduce((s,m)=>s+(m.unpaid||0),0)); });
+    fetchAll(()=>sb.from('payments').select('*').order('paid_at',{ascending:false}).order('id')).then(({data})=>setPays(data||[]));
+    fetchAll(()=>sb.from('members').select('id,name').order('id')).then(({data})=>setMembers(data||[]));
+    fetchAll(()=>sb.from('memberships').select('id,member_id,unpaid,trainer,status,start_date,end_date').order('id')).then(({data})=>{ setMsAll(data||[]); setUnpaidSum((data||[]).reduce((s,m)=>s+(m.unpaid||0),0)); });
     if(role==='master') sb.from('trainer_rates').select('*').then(({data})=>{ const o={}; (data||[]).forEach(r=>o[r.name]=r.rate); setRates(o); });
   },[]);
   function setRate(name,v){
