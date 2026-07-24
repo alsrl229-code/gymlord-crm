@@ -128,6 +128,27 @@ async function maybeBeforeDeleteSnapshot(sb){
 const LAST_BACKUP_KEY='gymlord_crm_last_backup';
 function markBackup(){ try{ localStorage.setItem(LAST_BACKUP_KEY, String(Date.now())); }catch(e){} }
 function daysSinceBackup(){ const v=Number(localStorage.getItem(LAST_BACKUP_KEY)||0); if(!v) return null; return Math.floor((Date.now()-v)/86400000); }
+// 마지막 파일 백업 시각 = localStorage(이 브라우저) 와 서버 로그(모든 기기) 중 최신 것.
+// localStorage만 보면 캐시를 지우거나 다른 PC·폰에서 열었을 때 실제로는 백업했는데도
+// "백업한 적 없음"으로 잘못 뜬다. 반대로 서버 로그만 보면 오프라인 다운로드를 놓친다.
+function useDaysSinceBackup(sb){
+  const [days,setDays]=useState(()=>daysSinceBackup());
+  useEffect(()=>{
+    if(!sb) return; let alive=true;
+    (async()=>{
+      try{
+        const {data}=await sb.from('logs').select('at')
+          .in('action',['전체 백업','백업 내려받기'])
+          .order('at',{ascending:false}).limit(1);
+        if(!alive || !data || !data[0]) return;
+        const newest=Math.max(new Date(data[0].at).getTime()||0, Number(localStorage.getItem(LAST_BACKUP_KEY)||0));
+        if(newest) setDays(Math.floor((Date.now()-newest)/86400000));
+      }catch(e){}
+    })();
+    return ()=>{ alive=false; };
+  },[sb]);
+  return days;
+}
 
 async function loadActiveTrainerNames(sb){
   const [ms,ls,tc]=await Promise.all([
@@ -2204,7 +2225,7 @@ function DashboardView({sb,onNav}){
   // B1: 위젯 행에서 바로 팔로업 할일 만들기 (회원 열지 않고 원클릭)
   const TaskBtn=({mid,title})=> memById[mid] ? <button className="taskmini" title="이 회원 팔로업 할일 추가"
     onClick={e=>{e.stopPropagation(); setTaskFor({member:memById[mid],initTitle:title});}}>＋할일</button> : null;
-  const dsb=daysSinceBackup();
+  const dsb=useDaysSinceBackup(sb);
   if(members===null) return <div className="empty">불러오는 중...</div>;
   return (<div>
     {can('logs') && (dsb===null||dsb>=7) && <div className="backup-remind" onClick={()=>onNav&&onNav('logs')} style={{cursor:'pointer'}}>
@@ -2691,12 +2712,20 @@ function SnapshotPanel({sb}){
     const u=URL.createObjectURL(blob),a=document.createElement('a');
     a.href=u; a.download=`gymlord_백업_${ymd(new Date(data.taken_at))}.json`; a.click(); URL.revokeObjectURL(u);
     markBackup();
+    logAct(sb,'백업 내려받기',`스냅샷 ${ymd(new Date(data.taken_at))}`);   // 다른 기기에서도 최근 백업으로 인식되게
   }
   async function restore(s){
     if(!confirm(`⚠️ ${fmt(s.taken_at)} (${s.label||'-'}) 시점으로 되돌립니다.\n\n· 지금의 회원·회원권·수업·결제·락커·상품 데이터가 이 시점 상태로 전부 교체됩니다.\n· 이후 추가·수정한 내용은 사라집니다.\n· (복원 직전 현재 상태는 자동으로 한 장 백업됩니다.)\n\n계속할까요?`)) return;
     if(!confirm('정말 복원할까요? 이 작업은 전체 데이터를 교체합니다.')) return;
     setBusy('rs'+s.id);
-    await snapshotNow(sb,'복원 전');            // 되돌리기용 안전망
+    // 되돌리기용 안전망. ★실패하면 복원을 중단한다 —
+    //   안전망 없이 복원하면 지금 데이터를 되돌릴 수단이 아예 사라진다.
+    const safe=await snapshotNow(sb,'복원 전');
+    if(!safe){
+      setBusy('');
+      alert('복원 전 안전 백업에 실패했습니다.\n\n지금 복원하면 현재 데이터를 되돌릴 수단이 없어서 중단했습니다.\n잠시 후 다시 시도하거나, 먼저 파일 백업을 받아두세요.');
+      return;
+    }
     const {data,error}=await sb.rpc('restore_crm_snapshot',{p_id:s.id});
     setBusy('');
     if(error){ alert('복원 실패: '+error.message); return; }
@@ -2763,7 +2792,7 @@ function LogsView({sb}){
     return q.toLowerCase().split(/\s+/).every(w=>s.includes(w));
   });
   const anyFilter=q.trim()||actor||from||to;
-  const dsb=daysSinceBackup();
+  const dsb=useDaysSinceBackup(sb);
   return (<div>
     {(dsb===null||dsb>=7) && <div className="backup-remind">
       <span>💾 {dsb===null?'아직 파일로 백업한 적이 없어요.':`마지막 파일 백업이 ${dsb}일 전이에요.`} 주 1회 파일 백업을 PC에 보관하는 걸 권장합니다.</span>
