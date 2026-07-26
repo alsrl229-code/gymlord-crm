@@ -120,6 +120,22 @@
     background:rgba(224,162,60,.1);border:1px solid rgba(224,162,60,.35);border-radius:12px;
     padding:11px 15px;margin-bottom:16px;font-size:13px;color:#e6be7e}
   .backup-remind .btn{white-space:nowrap}
+  /* 데이터 자가진단 (health) */
+  .hc-row{display:flex;align-items:flex-start;gap:10px;padding:9px 0;border-top:1px solid var(--line)}
+  .hc-row:first-of-type{border-top:0}
+  .hc-dot{flex:none;width:8px;height:8px;border-radius:50%;margin-top:6px}
+  .hc-bad  .hc-dot{background:#d98b7a}
+  .hc-warn .hc-dot{background:#e0a23c}
+  .hc-ok   .hc-dot{background:#7dc4a0}
+  .hc-info .hc-dot{background:#7b8a84}
+  .hc-body{flex:1;min-width:0}
+  .hc-label{font-size:13.5px;color:var(--cream)}
+  .hc-hint{font-size:12px;color:var(--muted);margin-top:3px;line-height:1.5}
+  .hc-n{flex:none;font-size:13px;font-weight:700;white-space:nowrap}
+  .hc-bad  .hc-n{color:#d98b7a}
+  .hc-warn .hc-n{color:#e0a23c}
+  .hc-info .hc-n{color:var(--muted)}
+  .hc-allok{display:flex;align-items:center;gap:8px;padding:12px 0;font-size:13.5px;color:#7dc4a0}
   /* 로그 필터 (B5) */
   .logfilter{background:var(--forest2);border:1px solid var(--line);border-radius:9px;padding:8px 10px;color:var(--cream);font-size:13px;cursor:pointer}
   /* 노트 유형 (B2) */
@@ -476,6 +492,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=71"></script>
+<script src="app.bundle.js?v=72"></script>
 </body>
 </html>

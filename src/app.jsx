@@ -2247,8 +2247,15 @@ function DashboardView({sb,onNav}){
   const TaskBtn=({mid,title})=> memById[mid] ? <button className="taskmini" title="이 회원 팔로업 할일 추가"
     onClick={e=>{e.stopPropagation(); setTaskFor({member:memById[mid],initTitle:title});}}>＋할일</button> : null;
   const dsb=useDaysSinceBackup(sb);
+  const hcBad=useHealthAlert(sb,role);
   if(members===null) return <div className="empty">불러오는 중...</div>;
   return (<div>
+    {hcBad && hcBad.length>0 && <div className="backup-remind"
+        style={{cursor:'pointer',background:'rgba(217,139,122,.12)',borderColor:'rgba(217,139,122,.4)',color:'#e3a091'}}
+        onClick={()=>onNav&&onNav('logs')}>
+      <span>🩺 데이터 이상 {hcBad.length}건이 발견됐습니다 — {hcBad.map(c=>`${c.label} ${c.n}건`).join(' · ')}</span>
+      <button className="btn sm" onClick={e=>{e.stopPropagation(); onNav&&onNav('logs');}}>자가진단 보기 →</button>
+    </div>}
     {can('logs') && (dsb===null||dsb>=7) && <div className="backup-remind" onClick={()=>onNav&&onNav('logs')} style={{cursor:'pointer'}}>
       <span>💾 {dsb===null?'데이터를 아직 파일로 백업한 적이 없어요.':`마지막 파일 백업이 ${dsb}일 전이에요.`} 사고에 대비해 파일 백업을 PC에 보관하세요.</span>
       <button className="btn sm" onClick={e=>{e.stopPropagation(); onNav&&onNav('logs');}}>백업하러 가기 →</button>
@@ -2709,6 +2716,103 @@ function ProductModal({sb,product,onClose,onSaved}){
 
 // ---------- 로그 기록 ----------
 // ---------- 자동 백업 · 복원 패널 ----------
+// 홈 배너용: 심각한 모순(bad)이 있을 때만 알린다.
+// 평소엔 홈을 깨끗하게 두고, 실제 모순이 생긴 날에만 눈에 걸리게 하는 것이 목적.
+// 마스터만 호출한다(crm_health가 마스터 전용이라 프리랜서는 에러가 됨).
+function useHealthAlert(sb, role){
+  const [bad,setBad]=useState(null);
+  useEffect(()=>{
+    if(!sb || role!=='master'){ setBad(null); return; }
+    let alive=true;
+    (async()=>{
+      try{
+        const {data,error}=await sb.rpc('crm_health');
+        if(!alive || error || !data || !data.checks) return;
+        setBad(data.checks.filter(c=>c.level==='bad' && c.n>0));
+      }catch(e){}
+    })();
+    return ()=>{ alive=false; };
+  },[sb,role]);
+  return bad;
+}
+
+// ---------- 데이터 자가진단 ----------
+// 왜 있나: 2026-07-25~26 회차 이중차감은 백업과 대조해서야 드러났다.
+// "잔여 > 총회차" 같은 모순을 앱이 상시 보여주면 사용자가 직접 발견할 수 있다.
+// 서버 RPC crm_health()가 검사 14종을 한 번에 계산한다(마스터 전용, db/health_check.sql).
+function HealthPanel({sb}){
+  const [data,setData]=useState(null);   // null=미로드 / 'na'=함수 없음 / {}=결과
+  const [busy,setBusy]=useState(false);
+  const [open,setOpen]=useState(false);
+  const [showOk,setShowOk]=useState(false);
+  async function load(){
+    setBusy(true);
+    const {data:d,error}=await sb.rpc('crm_health');
+    setBusy(false);
+    if(error){ setData(/does not exist|schema cache/i.test(error.message)?'na':{err:error.message}); return; }
+    setData(d||{});
+  }
+  useEffect(()=>{ if(open && data===null) load(); },[open]);
+
+  const checks=(data&&data.checks)||[];
+  const bad =checks.filter(c=>c.level==='bad'  && c.n>0);
+  const warn=checks.filter(c=>c.level==='warn' && c.n>0);
+  const info=checks.filter(c=>c.level==='info');
+  const okCount=checks.filter(c=>c.level!=='info' && c.n===0).length;
+  // 헤더 배지: 심각한 모순이 있으면 빨강, 확인거리만 있으면 주황, 아니면 초록
+  const sev = bad.length? 'bad' : warn.length? 'warn' : checks.length? 'ok' : '';
+  const badge = sev==='bad' ? `⚠️ 이상 ${bad.length}건`
+              : sev==='warn'? `확인 ${warn.length}건`
+              : sev==='ok'  ? '정상' : '';
+  const Row=({c})=>(
+    <div className={'hc-row hc-'+c.level}>
+      <span className="hc-dot"/>
+      <div className="hc-body">
+        <div className="hc-label">{c.label}</div>
+        {c.hint && <div className="hc-hint">{c.hint}</div>}
+      </div>
+      <span className="hc-n">{c.n.toLocaleString()}건</span>
+    </div>
+  );
+  return (<div className="mp-cardbox" style={{marginBottom:16}}>
+    <h3 style={{cursor:'pointer'}} onClick={()=>setOpen(o=>!o)}>
+      <span>🩺 데이터 자가진단</span>
+      <span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:700,
+        color: sev==='bad'?'#d98b7a':sev==='warn'?'#e0a23c':sev==='ok'?'#7dc4a0':undefined}}>
+        {open?'▲':'▼'} {badge}
+      </span>
+    </h3>
+    {open && <>
+      {data==='na' ? <div className="muted" style={{fontSize:12.5}}>진단 기능이 아직 DB에 설치되지 않았습니다. (db/health_check.sql 실행 필요)</div>
+       : data && data.err ? <div className="err">{data.err}</div>
+       : data===null ? <div className="muted">불러오는 중...</div>
+       : <>
+        <p className="muted" style={{fontSize:12.5,margin:'0 0 10px'}}>
+          숫자·금액이 서로 맞지 않는 상태를 찾아냅니다. <b>이상</b>은 있으면 안 되는 모순이라 바로 확인이 필요하고, <b>확인</b>은 정리하면 좋은 항목입니다.
+        </p>
+        {bad.length===0 && warn.length===0 &&
+          <div className="hc-allok">✅ 데이터 모순이 발견되지 않았습니다 ({okCount}개 항목 정상)</div>}
+        {bad.map(c=><Row key={c.key} c={c}/>)}
+        {warn.map(c=><Row key={c.key} c={c}/>)}
+        {showOk && <>
+          {checks.filter(c=>c.level!=='info' && c.n===0).map(c=>(
+            <div className="hc-row hc-ok" key={c.key}>
+              <span className="hc-dot"/>
+              <div className="hc-body"><div className="hc-label" style={{color:'var(--muted)'}}>{c.label}</div></div>
+              <span className="hc-n" style={{color:'#7dc4a0'}}>정상</span>
+            </div>))}
+          <div style={{borderTop:'1px solid var(--line)',marginTop:6,paddingTop:8}}/>
+          {info.map(c=><Row key={c.key} c={c}/>)}
+        </>}
+        <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
+          <button className="btn ghost sm" disabled={busy} onClick={load}>{busy?'검사 중...':'다시 검사'}</button>
+          <button className="btn ghost sm" onClick={()=>setShowOk(v=>!v)}>{showOk?'정상 항목 접기':`정상·참고 항목 보기 (${okCount+info.length})`}</button>
+        </div>
+       </>}
+    </>}
+  </div>);
+}
+
 function SnapshotPanel({sb}){
   const [snaps,setSnaps]=useState(null);
   const [busy,setBusy]=useState('');
@@ -2819,6 +2923,7 @@ function LogsView({sb}){
       <span>💾 {dsb===null?'아직 파일로 백업한 적이 없어요.':`마지막 파일 백업이 ${dsb}일 전이에요.`} 주 1회 파일 백업을 PC에 보관하는 걸 권장합니다.</span>
       <button className="btn sm" disabled={backing} onClick={backupAll}>{backing?'백업 중...':'⤓ 지금 백업'}</button>
     </div>}
+    <HealthPanel sb={sb}/>
     <SnapshotPanel sb={sb}/>
     <div className="bar" style={{marginTop:18,flexWrap:'wrap'}}>
       <input className="search" placeholder="로그 검색 — 예: 강수빈 / 삭제 / 락커 / 미수금" value={q} onChange={e=>setQ(e.target.value)}/>
