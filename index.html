@@ -136,6 +136,22 @@
   .hc-warn .hc-n{color:#e0a23c}
   .hc-info .hc-n{color:var(--muted)}
   .hc-allok{display:flex;align-items:center;gap:8px;padding:12px 0;font-size:13.5px;color:#7dc4a0}
+  .hc-detail{margin-top:8px;padding:8px 10px;background:rgba(255,255,255,.025);
+    border:1px solid var(--line);border-radius:9px}
+  .hc-table{width:100%;border-collapse:collapse;font-size:12.5px}
+  .hc-table td{padding:5px 6px;border-top:1px solid var(--line);vertical-align:top}
+  .hc-table tr:first-child td{border-top:0}
+  .hc-who{white-space:nowrap;font-weight:600;max-width:190px;overflow:hidden;text-overflow:ellipsis}
+  .hc-what{color:var(--muted);word-break:break-word}
+  .hc-when{white-space:nowrap;color:var(--muted);text-align:right}
+  @media(max-width:640px){
+    .hc-table,.hc-table tbody,.hc-table tr,.hc-table td{display:block;width:100%}
+    .hc-table td{border-top:0;padding:2px 0}
+    .hc-table tr{border-top:1px solid var(--line);padding:7px 0}
+    .hc-table tr:first-child{border-top:0}
+    .hc-when{text-align:left}
+    .hc-who{max-width:none}
+  }
   /* 로그 필터 (B5) */
   .logfilter{background:var(--forest2);border:1px solid var(--line);border-radius:9px;padding:8px 10px;color:var(--cream);font-size:13px;cursor:pointer}
   /* 노트 유형 (B2) */
@@ -492,6 +508,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=72"></script>
+<script src="app.bundle.js?v=73"></script>
 </body>
 </html>

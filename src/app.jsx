@@ -2740,7 +2740,7 @@ function useHealthAlert(sb, role){
 // 왜 있나: 2026-07-25~26 회차 이중차감은 백업과 대조해서야 드러났다.
 // "잔여 > 총회차" 같은 모순을 앱이 상시 보여주면 사용자가 직접 발견할 수 있다.
 // 서버 RPC crm_health()가 검사 14종을 한 번에 계산한다(마스터 전용, db/health_check.sql).
-function HealthPanel({sb}){
+function HealthPanel({sb,onOpenMember}){
   const [data,setData]=useState(null);   // null=미로드 / 'na'=함수 없음 / {}=결과
   const [busy,setBusy]=useState(false);
   const [open,setOpen]=useState(false);
@@ -2764,16 +2764,56 @@ function HealthPanel({sb}){
   const badge = sev==='bad' ? `⚠️ 이상 ${bad.length}건`
               : sev==='warn'? `확인 ${warn.length}건`
               : sev==='ok'  ? '정상' : '';
-  const Row=({c})=>(
-    <div className={'hc-row hc-'+c.level}>
+  // 상세 내역: 펼칠 때만 서버에서 가져온다(info 검사는 수백 건이라 미리 받으면 낭비).
+  const [detail,setDetail]=useState({});   // {key:{rows,limit,busy,err}}
+  async function toggleDetail(key){
+    const cur=detail[key];
+    if(cur && cur.open){ setDetail(d=>({...d,[key]:{...cur,open:false}})); return; }
+    if(cur && cur.rows){ setDetail(d=>({...d,[key]:{...cur,open:true}})); return; }
+    setDetail(d=>({...d,[key]:{open:true,busy:true}}));
+    const {data,error}=await sb.rpc('crm_health_detail',{p_key:key,p_limit:200});
+    setDetail(d=>({...d,[key]: error
+      ? {open:true,err:/does not exist|schema cache/i.test(error.message)?'상세보기 기능이 아직 DB에 설치되지 않았습니다. (db/health_detail.sql 실행 필요)':error.message}
+      : {open:true,rows:(data&&data.rows)||[],limit:(data&&data.limit)||200}}));
+  }
+  const Row=({c})=>{
+    const d=detail[c.key]||{};
+    return (<div className={'hc-row hc-'+c.level}>
       <span className="hc-dot"/>
       <div className="hc-body">
         <div className="hc-label">{c.label}</div>
         {c.hint && <div className="hc-hint">{c.hint}</div>}
+        {d.open && <div className="hc-detail">
+          {d.busy ? <div className="muted" style={{fontSize:12.5,padding:'6px 0'}}>불러오는 중...</div>
+           : d.err ? <div className="err" style={{margin:'6px 0 0'}}>{d.err}</div>
+           : (d.rows||[]).length===0 ? <div className="muted" style={{fontSize:12.5,padding:'6px 0'}}>해당하는 항목이 없습니다.</div>
+           : <>
+              <table className="hc-table"><tbody>
+                {d.rows.map((r,i)=>(<tr key={r.id+'_'+i}>
+                  <td className="hc-who">
+                    {r.member_id
+                      ? <button className="link" style={{margin:0,fontSize:12.5,textAlign:'left'}}
+                          onClick={()=>onOpenMember && onOpenMember(r.member_id)}>{r.who}</button>
+                      : <span>{r.who}</span>}
+                  </td>
+                  <td className="hc-what">{r.what}</td>
+                  <td className="hc-when">{r.when||''}</td>
+                </tr>))}
+              </tbody></table>
+              {c.n > d.rows.length &&
+                <div className="muted" style={{fontSize:12,marginTop:6}}>
+                  최근 {d.rows.length.toLocaleString()}건만 표시 · 외 {(c.n-d.rows.length).toLocaleString()}건 더 있습니다
+                </div>}
+             </>}
+        </div>}
       </div>
-      <span className="hc-n">{c.n.toLocaleString()}건</span>
-    </div>
-  );
+      <div style={{flex:'none',textAlign:'right'}}>
+        <div className="hc-n">{c.n.toLocaleString()}건</div>
+        {c.n>0 && <button className="link" style={{margin:'4px 0 0',fontSize:12}}
+          onClick={()=>toggleDetail(c.key)}>{d.open?'접기 ▲':'상세보기 ▼'}</button>}
+      </div>
+    </div>);
+  };
   return (<div className="mp-cardbox" style={{marginBottom:16}}>
     <h3 style={{cursor:'pointer'}} onClick={()=>setOpen(o=>!o)}>
       <span>🩺 데이터 자가진단</span>
@@ -2884,7 +2924,7 @@ function SnapshotPanel({sb}){
   </div>);
 }
 
-function LogsView({sb}){
+function LogsView({sb,onOpenMember}){
   const [rows,setRows]=useState(null);
   const [q,setQ]=useState('');
   const [from,setFrom]=useState(''),[to,setTo]=useState(''),[actor,setActor]=useState('');
@@ -2923,7 +2963,7 @@ function LogsView({sb}){
       <span>💾 {dsb===null?'아직 파일로 백업한 적이 없어요.':`마지막 파일 백업이 ${dsb}일 전이에요.`} 주 1회 파일 백업을 PC에 보관하는 걸 권장합니다.</span>
       <button className="btn sm" disabled={backing} onClick={backupAll}>{backing?'백업 중...':'⤓ 지금 백업'}</button>
     </div>}
-    <HealthPanel sb={sb}/>
+    <HealthPanel sb={sb} onOpenMember={onOpenMember}/>
     <SnapshotPanel sb={sb}/>
     <div className="bar" style={{marginTop:18,flexWrap:'wrap'}}>
       <input className="search" placeholder="로그 검색 — 예: 강수빈 / 삭제 / 락커 / 미수금" value={q} onChange={e=>setQ(e.target.value)}/>
@@ -3255,6 +3295,15 @@ function App(){
     })();
   },[authed]);
   async function logout(){ await sb.auth.signOut(); setMe(null); setAuthed(false); }
+  // 자가진단 상세에서 회원 이름 클릭 → 회원 상세 모달 열기.
+  // 진단 RPC는 마스터 권한(DEFINER)으로 집계하므로, 여기서 회원을 다시 조회할 때는
+  // 일반 RLS를 그대로 탄다(= 볼 수 없는 회원이면 안내 후 중단).
+  async function openMemberById(id){
+    if(!id) return;
+    const {data}=await sb.from('members').select('*').eq('id',id).maybeSingle();
+    if(!data){ alert('이 회원을 열 수 없습니다. (삭제됐거나 접근 권한이 없습니다)'); return; }
+    setGlobalSel(data);
+  }
   // 동의서 서명 링크(?consent=토큰)로 진입 시: 로그인 게이트 앞에서 서명 페이지 표시
   const consentTok=new URLSearchParams(location.search).get('consent');
   if(consentTok) return <ConsentSignPage token={consentTok}/>;
@@ -3311,7 +3360,7 @@ function App(){
          shownView==='lockers'? <LockersView sb={sb}/> :
          shownView==='sales'? <SalesView sb={sb}/> :
          shownView==='products'? <ProductsView sb={sb}/> :
-         shownView==='staff'? <StaffAdmin sb={sb}/> : <LogsView sb={sb}/>}
+         shownView==='staff'? <StaffAdmin sb={sb}/> : <LogsView sb={sb} onOpenMember={openMemberById}/>}
       </main>
       {showPolicy && <PrivacyModal onClose={()=>setShowPolicy(false)}/>}
       {showPw && <PasswordModal sb={sb} onClose={()=>setShowPw(false)}/>}
