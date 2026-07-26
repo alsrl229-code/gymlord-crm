@@ -2759,6 +2759,7 @@ function HealthPanel({sb,onOpenMember}){
   const warn=checks.filter(c=>c.level==='warn' && c.n>0);
   const info=checks.filter(c=>c.level==='info');
   const okCount=checks.filter(c=>c.level!=='info' && c.n===0).length;
+  const dismissedN=(data&&data.dismissed)||0;
   // 헤더 배지: 심각한 모순이 있으면 빨강, 확인거리만 있으면 주황, 아니면 초록
   const sev = bad.length? 'bad' : warn.length? 'warn' : checks.length? 'ok' : '';
   const badge = sev==='bad' ? `⚠️ 이상 ${bad.length}건`
@@ -2775,6 +2776,34 @@ function HealthPanel({sb,onOpenMember}){
     setDetail(d=>({...d,[key]: error
       ? {open:true,err:/does not exist|schema cache/i.test(error.message)?'상세보기 기능이 아직 DB에 설치되지 않았습니다. (db/health_detail.sql 실행 필요)':error.message}
       : {open:true,rows:(data&&data.rows)||[],limit:(data&&data.limit)||200}}));
+  }
+  // "문제없음" 처리 — 사유를 물어보고(선택) 제외 등록. 낙관적 갱신 없이 서버 재조회로 맞춘다.
+  const [busyKey,setBusyKey]=useState('');
+  async function dismissOne(key,r){
+    const note=prompt(`이 항목을 진단에서 제외합니다.\n\n${r.who} — ${r.what}\n\n사유를 남겨두면 나중에 검토할 때 도움이 됩니다. (선택, 비워도 됩니다)`,'');
+    if(note===null) return;   // 취소
+    setBusyKey(key+':'+r.id);
+    const {error}=await sb.rpc('crm_health_dismiss',
+      {p_key:key,p_target_id:r.id,p_label:`${r.who} — ${r.what}`,p_note:note});
+    setBusyKey('');
+    if(error){ alert('제외 처리 실패: '+error.message); return; }
+    setDetail(d=>({...d,[key]:{...(d[key]||{}),rows:((d[key]||{}).rows||[]).filter(x=>x.id!==r.id)}}));
+    setDis(null);      // 제외 목록 캐시 무효화
+    load();            // 건수 다시 계산
+  }
+  // 제외 목록
+  const [dis,setDis]=useState(null);
+  const [disOpen,setDisOpen]=useState(false);
+  async function loadDis(){
+    const {data,error}=await sb.rpc('crm_health_dismissed');
+    setDis(error?{err:error.message}:(data||[]));
+  }
+  useEffect(()=>{ if(disOpen && dis===null) loadDis(); },[disOpen,dis]);
+  async function restoreOne(x){
+    if(!confirm(`이 항목을 다시 진단 대상으로 되돌립니다.\n\n${x.label||''}\n\n계속할까요?`)) return;
+    const {error}=await sb.rpc('crm_health_restore',{p_id:x.id});
+    if(error){ alert('되돌리기 실패: '+error.message); return; }
+    setDis(null); setDetail({}); load();
   }
   const Row=({c})=>{
     const d=detail[c.key]||{};
@@ -2796,8 +2825,18 @@ function HealthPanel({sb,onOpenMember}){
                           onClick={()=>onOpenMember && onOpenMember(r.member_id)}>{r.who}</button>
                       : <span>{r.who}</span>}
                   </td>
-                  <td className="hc-what">{r.what}</td>
+                  <td className="hc-what">
+                    <div>{r.what}</div>
+                    {r.why && <div className="hc-why">{r.why}</div>}
+                  </td>
                   <td className="hc-when">{r.when||''}</td>
+                  <td className="hc-act">
+                    <button className="hc-okbtn" title="이 항목을 진단에서 제외합니다"
+                      disabled={busyKey===c.key+':'+r.id}
+                      onClick={()=>dismissOne(c.key,r)}>
+                      {busyKey===c.key+':'+r.id?'처리 중...':'☑ 문제없음'}
+                    </button>
+                  </td>
                 </tr>))}
               </tbody></table>
               {c.n > d.rows.length &&
@@ -2847,7 +2886,32 @@ function HealthPanel({sb,onOpenMember}){
         <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
           <button className="btn ghost sm" disabled={busy} onClick={load}>{busy?'검사 중...':'다시 검사'}</button>
           <button className="btn ghost sm" onClick={()=>setShowOk(v=>!v)}>{showOk?'정상 항목 접기':`정상·참고 항목 보기 (${okCount+info.length})`}</button>
+          {dismissedN>0 && <button className="btn ghost sm" onClick={()=>setDisOpen(v=>!v)}>
+            {disOpen?'제외 목록 접기':`🗂 제외한 항목 (${dismissedN})`}</button>}
         </div>
+        {/* 제외 목록 — 실수로 제외한 게 없는지 검토하는 자리.
+            '지금은 해당 없음'은 데이터가 바뀌어 더는 문제가 아니라는 뜻이라 되돌려도 안전하다. */}
+        {disOpen && <div className="hc-dismissed">
+          <div className="hc-hint" style={{marginBottom:8}}>
+            제외한 항목은 진단 건수에서 빠집니다. 잘못 제외한 게 없는지 여기서 확인하고 되돌릴 수 있습니다.
+          </div>
+          {dis===null ? <div className="muted" style={{fontSize:12.5}}>불러오는 중...</div>
+           : dis.err ? <div className="err">{dis.err}</div>
+           : dis.length===0 ? <div className="muted" style={{fontSize:12.5}}>제외한 항목이 없습니다.</div>
+           : <table className="hc-table"><tbody>
+              {dis.map(x=>(<tr key={x.id}>
+                <td className="hc-who">{x.label||'(내용 없음)'}</td>
+                <td className="hc-what">
+                  <div>{x.check_label}{x.note?` · 사유: ${x.note}`:''}</div>
+                  <div className="hc-why" style={{color:x.still_matching?'#e0a23c':'#7dc4a0'}}>
+                    {x.still_matching?'지금도 이 문제에 해당합니다 (제외 중)':'지금은 해당 없음 — 되돌려도 진단에 안 뜹니다'}
+                  </div>
+                </td>
+                <td className="hc-when">{x.dismissed_at}<br/><span className="muted">{x.by||''}</span></td>
+                <td className="hc-act"><button className="hc-okbtn" onClick={()=>restoreOne(x)}>↩ 되돌리기</button></td>
+              </tr>))}
+             </tbody></table>}
+        </div>}
        </>}
     </>}
   </div>);
