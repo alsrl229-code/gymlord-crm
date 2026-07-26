@@ -288,7 +288,11 @@ function RegisterModal({sb,member,onClose,onSaved}){
     setBusy(true);
     const {data:ins,error}=await sb.from('memberships').insert({member_id:member.id,product_name:name,category:cat,kind:'회차제',total_count:total,remaining_count:total,start_date:sd||null,end_date:ed||null,price:_amt||null,trainer:trainer||null,status:'활성',unpaid:_unpaid||0}).select().single();
     if(error){ setBusy(false); return setErr('저장 실패: '+error.message); }
-    if(_rec>0) await sb.from('payments').insert({member_id:member.id,membership_id:ins.id,amount:_rec,paid_at:sd||ymd(t),method:_unpaid>0?'일부결제':'등록',pay_method:payMethod});
+    // 결제기록 insert 실패를 놓치면 회원권만 생기고 매출에는 안 잡힌다 → 실패 시 알린다.
+    if(_rec>0){
+      const {error:payErr}=await sb.from('payments').insert({member_id:member.id,membership_id:ins.id,amount:_rec,paid_at:sd||ymd(t),method:_unpaid>0?'일부결제':'등록',pay_method:payMethod});
+      if(payErr){ setBusy(false); return setErr(`회원권은 등록됐지만 결제기록 저장에 실패했습니다: ${payErr.message}\n매출에 반영되지 않았으니 결제 내역에서 직접 추가해주세요.`); }
+    }
     await sb.from('members').update({status:'활성'}).eq('id',member.id);
     logAct(sb,'회원권 등록',`${member.name} · ${name}${_amt?` · ${_amt.toLocaleString()}원`:''}${_unpaid?` (미수금 ${_unpaid.toLocaleString()}원)`:''}`);
     setBusy(false); onSaved();
@@ -752,21 +756,34 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
     {showHistory && <LessonHistoryModal member={member} lessons={ls||[]} memberships={ms||[]} initialTab={lessonTab} onClose={()=>setShowHistory(false)}/>}
     {lockerPick && <LockerPickModal sb={sb} member={member} onClose={()=>setLockerPick(false)} onSaved={()=>{setLockerPick(false);reload();}}/>}
     {collect && <CollectModal sb={sb} member={member} memberships={ms||[]} onClose={()=>setCollect(false)} onSaved={()=>{reload();}}/>}
-    {refund && <RefundModal sb={sb} member={member} payment={refund} onClose={()=>setRefund(null)} onSaved={()=>{setRefund(null);reload();}}/>}
+    {refund && <RefundModal sb={sb} member={member} payment={refund} pays={pays||[]} onClose={()=>setRefund(null)} onSaved={()=>{setRefund(null);reload();}}/>}
     {editPay && <EditPaymentModal sb={sb} member={member} payment={editPay} onClose={()=>setEditPay(null)} onSaved={()=>{setEditPay(null);reload();}}/>}
     {taskModal && <TaskModal sb={sb} member={member} initTitle={taskModal.initTitle} onClose={()=>setTaskModal(null)} onSaved={()=>setTaskModal(null)}/>}
   </>), document.body);
 }
 
 // ---------- 환불 ----------
-function RefundModal({sb,member,payment,onClose,onSaved}){
+function RefundModal({sb,member,payment,pays,onClose,onSaved}){
   useEsc(onClose);
-  const [amt,setAmt]=useState((payment.amount||0).toLocaleString());
+  // 같은 회원권(없으면 같은 회원)에 이미 환불된 합계.
+  // ★ 원 결제액만 보고 막으면 같은 결제를 두 번 환불할 수 있다(매출이 음수로 남음).
+  //   환불행에는 원거래를 가리키는 키가 없어서 회원권 단위로 집계해 상한을 잡는다.
+  const sameKey = p => payment.membership_id
+    ? p.membership_id===payment.membership_id
+    : (!p.membership_id && p.member_id===payment.member_id);
+  const scope=(pays||[]).filter(sameKey);
+  const paidSum   = scope.filter(p=>(p.amount||0)>0).reduce((s,p)=>s+p.amount,0);
+  const refundSum = scope.filter(p=>(p.amount||0)<0).reduce((s,p)=>s-p.amount,0);
+  const refundable= Math.max(0, Math.min(payment.amount||0, paidSum-refundSum));
+  const [amt,setAmt]=useState(refundable.toLocaleString());
   const [busy,setBusy]=useState(false),[err,setErr]=useState('');
   async function save(){
     const a=parseInt((amt||'').replace(/\D/g,''))||0;
     if(a<=0) return setErr('환불액을 입력하세요');
     if(a>payment.amount) return setErr(`원 결제액(${payment.amount.toLocaleString()}원)보다 많습니다`);
+    if(a>refundable) return setErr(refundable===0
+      ? `이미 전액 환불됐습니다. (결제 ${paidSum.toLocaleString()}원 · 환불 ${refundSum.toLocaleString()}원)`
+      : `환불 가능액을 넘습니다. 남은 환불 가능액 ${refundable.toLocaleString()}원 (결제 ${paidSum.toLocaleString()}원 · 이미 환불 ${refundSum.toLocaleString()}원)`);
     setBusy(true);
     const {error}=await sb.from('payments').insert({member_id:payment.member_id,membership_id:payment.membership_id||null,amount:-a,paid_at:ymd(new Date()),method:'환불',pay_method:payment.pay_method||null});
     setBusy(false);
@@ -778,7 +795,7 @@ function RefundModal({sb,member,payment,onClose,onSaved}){
     <div className="mhead"><h3>환불 · {member.name}</h3><button className="xbtn" onClick={onClose}>✕</button></div>
     <p className="muted" style={{fontSize:13,marginTop:0}}>원거래: {fmtDate(payment.paid_at)} · {payment.method||'-'} · {(payment.amount||0).toLocaleString()}원{payment.pay_method?` (${payment.pay_method})`:''}</p>
     <div className="field"><label>환불액(원)</label><input autoFocus value={amt} onChange={e=>setAmt(fmtNum(e.target.value))}/></div>
-    <p className="muted" style={{fontSize:12,margin:'0 0 10px'}}>환불은 매출에 음수로 기록되어 합계에서 차감됩니다. 회원권 잔여횟수·만료일은 바뀌지 않으니 필요하면 회원권 수정에서 조정하세요.</p>
+    <p className="muted" style={{fontSize:12,margin:'0 0 10px'}}>남은 환불 가능액 <b>{refundable.toLocaleString()}원</b>{refundSum>0?` (이미 ${refundSum.toLocaleString()}원 환불됨)`:''}. 환불은 매출에 음수로 기록되어 합계에서 차감됩니다. 회원권 잔여횟수·만료일은 바뀌지 않으니 필요하면 회원권 수정에서 조정하세요.</p>
     {err && <div className="err">{err}</div>}
     <button className="btn" style={{width:'100%'}} disabled={busy} onClick={save}>{busy?'처리 중...':'환불 처리'}</button>
   </div></div>);
@@ -847,9 +864,13 @@ function CollectModal({sb,member,memberships,onClose,onSaved}){
     if(rec<=0) return setErr('수납액을 입력하세요');
     if(rec>m.unpaid) return setErr(`미수금(${m.unpaid.toLocaleString()}원)보다 많이 입력했습니다`);
     setBusy(true);
+    // ★ 순서 주의: 결제기록을 먼저 넣고 그 다음 미수금을 줄인다.
+    //   반대로 하면 결제 insert가 실패했을 때 미수금만 줄어들어 '받은 돈이 장부에서 사라진다'.
+    //   이 순서면 최악의 경우에도 결제는 남고 미수금이 안 줄어든 상태 = 눈에 보이고 고칠 수 있다.
+    const {error:payErr}=await sb.from('payments').insert({member_id:member.id,membership_id:m.id,amount:rec,paid_at:ymd(new Date()),method:'미수금수납',pay_method:payMethod});
+    if(payErr){ setBusy(false); return setErr('결제기록 저장 실패: '+payErr.message); }
     const {error}=await sb.from('memberships').update({unpaid:m.unpaid-rec}).eq('id',m.id);
-    if(error){ setBusy(false); return setErr('저장 실패: '+error.message); }
-    await sb.from('payments').insert({member_id:member.id,membership_id:m.id,amount:rec,paid_at:ymd(new Date()),method:'미수금수납',pay_method:payMethod});
+    if(error){ setBusy(false); return setErr(`결제는 기록됐지만 미수금 차감에 실패했습니다: ${error.message}\n회원권 수정에서 미수금을 직접 조정해주세요.`); }
     logAct(sb,'미수금 수납',`${member.name} · ${m.product_name} · ${rec.toLocaleString()}원 (${payMethod})`);
     setBusy(false); setDone(d=>({...d,[m.id]:rec})); onSaved();
   }
@@ -3122,7 +3143,9 @@ function App(){
       try{ const {data}=await sb.auth.getUser(); email=(data&&data.user&&data.user.email)||''; }catch(e){}
       if(OWNER_EMAILS.includes(email)){ setMe({role:'master',perms:{},email,name:'서민기'}); return; }
       let row=null;
-      try{ const {data}=await sb.from('staff').select('*').eq('email',email).maybeSingle(); row=data; }catch(e){}
+      // active=true 조건 필수 — 빼면 퇴사 처리(active=false)한 직원이 UI에서 예전 권한을
+      // 그대로 보게 된다(데이터는 RLS가 막지만 빈 화면만 보여 혼란). 서버 판정과 일치시킨다.
+      try{ const {data}=await sb.from('staff').select('*').eq('email',email).eq('active',true).maybeSingle(); row=data; }catch(e){}
       setMe(row || {role:'trainer',perms:DEFAULT_TRAINER_PERMS,email,name:email?email.split('@')[0]:''});
     })();
   },[authed]);
