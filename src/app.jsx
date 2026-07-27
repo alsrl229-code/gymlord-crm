@@ -2745,12 +2745,38 @@ function HealthPanel({sb,onOpenMember}){
   const [busy,setBusy]=useState(false);
   const [open,setOpen]=useState(false);
   const [showOk,setShowOk]=useState(false);
+  // 펼쳐둔 상세 목록의 최신 상태를 load() 안에서 읽기 위한 ref.
+  // (load는 콜백으로도 불려서 state를 직접 읽으면 옛 값이 잡힌다)
+  const detailRef=useRef({});
+  const [lastAt,setLastAt]=useState('');
+  // "다시 검사" = 건수 + **펼쳐져 있는 상세까지** 서버에서 새로 가져온다.
+  // 이걸 안 하면 회원 데이터를 고쳐도 캐시된 상세가 그대로 떠서
+  // 새로고침(F5) 해야만 반영되는 것처럼 보인다.
   async function load(){
     setBusy(true);
     const {data:d,error}=await sb.rpc('crm_health');
-    setBusy(false);
-    if(error){ setData(/does not exist|schema cache/i.test(error.message)?'na':{err:error.message}); return; }
+    if(error){
+      setBusy(false);
+      setData(/does not exist|schema cache/i.test(error.message)?'na':{err:error.message});
+      return;
+    }
     setData(d||{});
+    const openKeys=Object.keys(detailRef.current).filter(k=>detailRef.current[k] && detailRef.current[k].open);
+    if(openKeys.length){
+      const res=await Promise.all(openKeys.map(k=>sb.rpc('crm_health_detail',{p_key:k,p_limit:200})));
+      setDetail(()=>{
+        const next={};   // 닫혀 있던 캐시는 버린다 — 다음에 펼칠 때 새로 받게
+        openKeys.forEach((k,i)=>{
+          const {data:dd,error:ee}=res[i];
+          next[k]= ee ? {open:true,err:ee.message}
+                      : {open:true,rows:(dd&&dd.rows)||[],limit:(dd&&dd.limit)||200};
+        });
+        return next;
+      });
+    } else setDetail({});
+    setDis(null);        // 제외 목록도 다시 받도록 무효화
+    setLastAt(new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit',second:'2-digit'}));
+    setBusy(false);
   }
   useEffect(()=>{ if(open && data===null) load(); },[open]);
 
@@ -2767,6 +2793,7 @@ function HealthPanel({sb,onOpenMember}){
               : sev==='ok'  ? '정상' : '';
   // 상세 내역: 펼칠 때만 서버에서 가져온다(info 검사는 수백 건이라 미리 받으면 낭비).
   const [detail,setDetail]=useState({});   // {key:{rows,limit,busy,err}}
+  useEffect(()=>{ detailRef.current=detail; },[detail]);
   async function toggleDetail(key){
     const cur=detail[key];
     if(cur && cur.open){ setDetail(d=>({...d,[key]:{...cur,open:false}})); return; }
@@ -2787,9 +2814,8 @@ function HealthPanel({sb,onOpenMember}){
       {p_key:key,p_target_id:r.id,p_label:`${r.who} — ${r.what}`,p_note:note});
     setBusyKey('');
     if(error){ alert('제외 처리 실패: '+error.message); return; }
-    setDetail(d=>({...d,[key]:{...(d[key]||{}),rows:((d[key]||{}).rows||[]).filter(x=>x.id!==r.id)}}));
     setDis(null);      // 제외 목록 캐시 무효화
-    load();            // 건수 다시 계산
+    await load();      // 건수 + 펼쳐진 상세를 서버 기준으로 다시 맞춘다
   }
   // 제외 목록
   const [dis,setDis]=useState(null);
@@ -2803,7 +2829,7 @@ function HealthPanel({sb,onOpenMember}){
     if(!confirm(`이 항목을 다시 진단 대상으로 되돌립니다.\n\n${x.label||''}\n\n계속할까요?`)) return;
     const {error}=await sb.rpc('crm_health_restore',{p_id:x.id});
     if(error){ alert('되돌리기 실패: '+error.message); return; }
-    setDis(null); setDetail({}); load();
+    setDis(null); load();   // load가 펼쳐진 상세까지 다시 받아온다
   }
   const Row=({c})=>{
     const d=detail[c.key]||{};
@@ -2884,7 +2910,8 @@ function HealthPanel({sb,onOpenMember}){
           {info.map(c=><Row key={c.key} c={c}/>)}
         </>}
         <div style={{display:'flex',gap:8,marginTop:12,flexWrap:'wrap'}}>
-          <button className="btn ghost sm" disabled={busy} onClick={load}>{busy?'검사 중...':'다시 검사'}</button>
+          <button className="btn ghost sm" disabled={busy} onClick={load}>{busy?'검사 중...':'🔄 다시 검사'}</button>
+          {lastAt && <span className="muted" style={{fontSize:11.5,alignSelf:'center'}}>{lastAt} 기준</span>}
           <button className="btn ghost sm" onClick={()=>setShowOk(v=>!v)}>{showOk?'정상 항목 접기':`정상·참고 항목 보기 (${okCount+info.length})`}</button>
           {dismissedN>0 && <button className="btn ghost sm" onClick={()=>setDisOpen(v=>!v)}>
             {disOpen?'제외 목록 접기':`🗂 제외한 항목 (${dismissedN})`}</button>}
