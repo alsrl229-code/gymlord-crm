@@ -114,7 +114,15 @@
   .gsearch-item b{font-size:13px}
   .gsearch-item small{color:var(--muted);font-size:11px}
   .gsearch-empty{padding:10px 12px;color:var(--muted);font-size:12px}
-  @media(max-width:860px){ .gsearch{display:none} }
+  /* 모바일: 사이드바가 하단 탭바로 바뀌면서 검색창 자리가 없어 display:none 이었다.
+     하지만 폰에서 가장 잦은 동작이 "회원 찾기"라 회원 탭까지 들어가야 하는 건 손해다.
+     → 상단 고정 바로 되살린다(우상단 로그아웃 버튼 자리는 비켜서 배치). */
+  @media(max-width:860px){
+    .gsearch{display:block;position:fixed;top:10px;left:12px;right:60px;z-index:16;padding:0}
+    .gsearch>input{height:38px;border-radius:19px;font-size:14px;
+      background:rgba(21,36,32,.94);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
+    .gsearch-res{left:0;right:0;max-height:60vh}
+  }
   /* 백업 리마인더 배너 (A3) */
   .backup-remind{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap;
     background:rgba(224,162,60,.1);border:1px solid rgba(224,162,60,.35);border-radius:12px;
@@ -254,8 +262,12 @@
     .side{position:fixed;bottom:0;left:0;right:0;top:auto;width:100%;flex:none;height:auto;
       flex-direction:row;padding:5px 4px calc(6px + env(safe-area-inset-bottom));
       border-right:none;border-top:1px solid var(--brassline);
-      background:rgba(21,36,32,.95);backdrop-filter:blur(14px);
-      -webkit-backdrop-filter:blur(14px);z-index:15;align-items:stretch;gap:0}
+      background:transparent;z-index:15;align-items:stretch;gap:0}
+    /* ★배경·블러를 .side 자신이 아니라 가상요소에 준다.
+       backdrop-filter가 걸린 요소는 position:fixed 자식의 기준 박스가 돼버려서,
+       안에 있는 검색창을 화면 상단에 고정하려 해도 하단 탭바 기준으로 붙는다. */
+    .side::before{content:"";position:absolute;inset:0;z-index:-1;pointer-events:none;
+      background:rgba(21,36,32,.95);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
     .side .logo,.side-orn,.side-spacer{display:none}
     .side>.btn{display:none} /* 데스크탑 로그아웃은 하단바에서 숨김, 우상단 원형 버튼으로 대체 */
     .side-nav{flex:1;flex-direction:row;justify-content:space-between;gap:0;overflow:hidden}
@@ -273,8 +285,8 @@
       border:1px solid var(--brassline);border-radius:50%;
       color:var(--muted);font-size:15px;cursor:pointer;font-family:inherit}
     .mob-logout:hover{color:var(--brass);border-color:var(--brass)}
-    /* 메인 컨텐츠가 하단바에 안 가리게 */
-    .main{padding:0 14px calc(72px + env(safe-area-inset-bottom))}
+    /* 메인 컨텐츠가 하단바(아래)와 상단 검색바(위)에 안 가리게 */
+    .main{padding:56px 14px calc(72px + env(safe-area-inset-bottom))}
     .mpage{left:0;padding-bottom:calc(72px + env(safe-area-inset-bottom))}
     .mp-body{padding:14px 14px calc(20px + env(safe-area-inset-bottom))}
     .mlist-table .row{grid-template-columns:32px 34px 62px minmax(0,1fr) 96px;gap:6px;padding:12px 10px}
@@ -516,6 +528,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=76"></script>
+<script src="app.bundle.js?v=77"></script>
 </body>
 </html>

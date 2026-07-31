@@ -1139,10 +1139,10 @@ function MembersView({sb}){
 }
 
 // ---------- 신규 회원 등록 ----------
-function AddMemberModal({sb,onClose,onSaved}){
+function AddMemberModal({sb,onClose,onSaved,initName}){
   useEsc(onClose);
   const {role,name:myName}=usePerm();
-  const [name,setName]=useState('');
+  const [name,setName]=useState(initName||'');  // 스케줄 가져오기에서 '회원없음'을 바로 풀 때 이름을 채워준다
   const [phone,setPhone]=useState('');
   const [gender,setGender]=useState('');
   const [birth,setBirth]=useState('');
@@ -1333,19 +1333,37 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
 }
 
 // ---------- 주간 스케줄 일괄 가져오기 ----------
+// 직전 설정 기억 — 매주 같은 값(강사·수업명·길이)을 다시 고르던 것을 없앤다.
+const IMPORT_PREFS='gl_import_prefs';
+const BAD_LABEL={missing_member:'회원없음',ambiguous_member:'동명이인',no_membership:'회원권없음',
+  trainer_mismatch:'강사불일치',conflict:'시간겹침',invalid:'형식오류',error:'오류'};
+function loadImportPrefs(){ try{ return JSON.parse(localStorage.getItem(IMPORT_PREFS))||{}; }catch(e){ return {}; } }
+
 function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
   useEsc(onClose);
+  const pref=useMemo(()=>loadImportPrefs(),[]);
   const [text,setText]=useState('');
   const [items,setItems]=useState([]);
   const [err,setErr]=useState('');
   const [busy,setBusy]=useState(false);
-  const [trainer,setTrainer]=useState('서민기');
-  const [lessonName,setLessonName]=useState('대표 PT');
-  const [duration,setDuration]=useState('60');
-  const [allowNoMembership,setAllowNoMembership]=useState(false);
-  const [skipConflicts,setSkipConflicts]=useState(true);
+  const [trainer,setTrainer]=useState(pref.trainer||'서민기');
+  const [lessonName,setLessonName]=useState(pref.lessonName||'대표 PT');
+  const [duration,setDuration]=useState(pref.duration||'60');
+  const [allowNoMembership,setAllowNoMembership]=useState(!!pref.allowNoMembership);
+  const [skipConflicts,setSkipConflicts]=useState(pref.skipConflicts!==false);
   const [result,setResult]=useState(null);
   const [picks,setPicks]=useState({}); // 동명이인 수동 지정: {행idx: member_id}
+  // ── 실패 건을 이 모달 안에서 바로 푼다 (예전엔 다른 화면에서 고치고 돌아와 재시도해야 했다) ──
+  const [extra,setExtra]=useState([]);            // 여기서 새로 만든 회원
+  const [addMember,setAddMember]=useState(null);  // {idx,name} 회원 등록 모달
+  const [addMs,setAddMs]=useState(null);          // {member} 회원권 등록 모달
+  const [rowTrainer,setRowTrainer]=useState({});  // {행idx: 강사명} 이 행만 강사 바꾸기
+  const [onlyBad,setOnlyBad]=useState(false);
+  const allMembers=useMemo(()=>[...members,...extra],[members,extra]);
+
+  useEffect(()=>{ try{ localStorage.setItem(IMPORT_PREFS,
+    JSON.stringify({trainer,lessonName,duration,skipConflicts,allowNoMembership})); }catch(e){} },
+    [trainer,lessonName,duration,skipConflicts,allowNoMembership]);
 
   function statusBadge(status){
     const map={
@@ -1399,10 +1417,10 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
 
   function compactName(v){ return String(v||'').replace(/\s+/g,'').trim(); }
   function findMember(name){
-    const exact=members.filter(m=>(m.name||'').trim()===name);
+    const exact=allMembers.filter(m=>(m.name||'').trim()===name);
     if(exact.length===1) return {member:exact[0]};
     if(exact.length>1) return {status:'ambiguous_member',message:'같은 이름의 회원이 2명 이상입니다.',candidates:exact};
-    const compact=members.filter(m=>compactName(m.name)===compactName(name));
+    const compact=allMembers.filter(m=>compactName(m.name)===compactName(name));
     if(compact.length===1) return {member:compact[0]};
     if(compact.length>1) return {status:'ambiguous_member',message:'비슷한 이름의 회원이 2명 이상입니다.',candidates:compact};
     return {status:'missing_member',message:'CRM 회원 목록에서 찾지 못했습니다.'};
@@ -1435,18 +1453,19 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
       const date=String(row.date || row.dateISO || '').trim();
       const start=String(row.start || row.time || row.startTime || '').trim();
       const rowLesson=String(row.lessonType || row.lessonName || row.lesson_name || defaultLesson).trim();
-      const rowTrainer=String(row.trainer || defaultTrainer).trim();
+      // 이 행만 강사를 바꾼 경우(강사불일치를 그 자리에서 푸는 용도)가 최우선
+      const rowTrainerName=String(rowTrainer[idx] || row.trainer || defaultTrainer).trim();
       const rowDuration=parseInt(row.brojDurationMinutes || row.durationMinutes || defaultDuration)||60;
       const time=buildTime(date,start,row.end || row.endTime,rowDuration);
       if(!memberName || !time) return {idx,row,status:'invalid',memberName,date,start,message:'회원명/날짜/시간 형식을 확인해주세요.'};
       const forcedId=picksArg[idx];
-      const forced=forcedId? members.find(m=>String(m.id)===String(forcedId)) : null;
+      const forced=forcedId? allMembers.find(m=>String(m.id)===String(forcedId)) : null;
       const match=forced? {member:forced} : findMember(memberName);
       const base={
         idx,row,memberName,date,start,
         startISO:time.startISO,endISO:time.endISO,startDate:time.start,endDate:time.end,
         lessonName:rowLesson || defaultLesson,
-        trainer:rowTrainer || defaultTrainer,
+        trainer:rowTrainerName || defaultTrainer,
         duration:rowDuration
       };
       if(!match.member){
@@ -1501,7 +1520,7 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
           return list.some(ms=>normTrainer(ms.trainer)===normTrainer(it.trainer) && (remainingByMs[ms.id] ?? ms.remaining_count)>0);
         });
         if(eligible.length===1){
-          const member=members.find(m=>String(m.id)===String(eligible[0].id)) || eligible[0];
+          const member=allMembers.find(m=>String(m.id)===String(eligible[0].id)) || eligible[0];
           it={...it,status:'pending',member,memberName:member.name,autoResolved:true};
         } else {
           return {...it,membership:null,message:eligible.length>1
@@ -1537,6 +1556,32 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
     const next={...picks,[idx]:memberId};
     setPicks(next);
     await buildItems(next);
+  }
+
+  // 붙여넣으면 바로 검사한다. 예전엔 붙여넣고 '검사'를 따로 눌러야 했다.
+  const buildRef=useRef(buildItems); buildRef.current=buildItems;
+  useEffect(()=>{
+    if(!text.trim()) return;
+    const t=setTimeout(()=>{ buildRef.current().catch(()=>{}); },450);
+    return ()=>clearTimeout(t);
+  },[text]);
+
+  // 인라인 수정(회원 추가·행별 강사 변경) 후 재검사.
+  // ★setTimeout으로 부르면 state 반영 전 옛 closure가 잡힌다. 렌더가 끝난 뒤 도는 effect로 처리한다.
+  const skipFirst=useRef(true);
+  useEffect(()=>{
+    if(skipFirst.current){ skipFirst.current=false; return; }
+    if(!text.trim()) return;
+    buildRef.current().catch(()=>{});
+  },[extra,rowTrainer]);
+
+  function changeRowTrainer(idx,name){ setRowTrainer(r=>({...r,[idx]:name})); }
+  // 인라인으로 만든 회원을 목록에 붙이고 그 행에 바로 지정한다
+  function memberCreated(m){
+    const idx=addMember? addMember.idx : null;
+    if(idx!=null) setPicks(p=>({...p,[idx]:m.id}));
+    setExtra(x=>[...x,m]);   // 이 변경이 위 effect를 깨워 재검사한다
+    setAddMember(null);
   }
 
   async function registerReady(){
@@ -1580,6 +1625,12 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
 
   const readyCount=items.filter(x=>x.status==='ready').length;
   const registeredCount=items.filter(x=>x.status==='registered').length;
+  // '해결 필요' = 손을 대야 등록되는 것. duplicate(이미 등록됨)는 정상이라 뺀다.
+  const BAD=['missing_member','ambiguous_member','no_membership','trainer_mismatch','conflict','invalid','error'];
+  const bad=items.filter(x=>BAD.includes(x.status));
+  const badCount=bad.length;
+  const badBreak=bad.reduce((o,x)=>(o[x.status]=(o[x.status]||0)+1,o),{});
+  const shown=onlyBad? bad : items;
 
   return (
     <div className="modal-ov" onClick={onClose}><div className="modal" style={{maxWidth:860}} onClick={e=>e.stopPropagation()}>
@@ -1602,16 +1653,21 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
         <label style={{fontSize:13,color:'var(--muted)'}}><input type="checkbox" checked={allowNoMembership} onChange={e=>{setAllowNoMembership(e.target.checked);setItems([]);}}/> 활성 회원권 없어도 예약 등록</label>
       </div>
       <div style={{display:'flex',gap:8,flexWrap:'wrap',alignItems:'center'}}>
-        <button className="btn ghost sm" disabled={busy} onClick={()=>buildItems()}>검사</button>
+        <button className="btn ghost sm" disabled={busy} onClick={()=>buildItems()}>다시 검사</button>
         <button className="btn" disabled={busy||readyCount===0} onClick={registerReady}>{busy?'등록 중...':`등록 가능 ${readyCount}건 저장`}</button>
         {items.length>0 && <span className="muted" style={{fontSize:13}}>전체 {items.length}건 · 등록완료 {registeredCount}건</span>}
+        {badCount>0 && <label style={{fontSize:13,color:'var(--muted)',marginLeft:'auto'}}>
+          <input type="checkbox" checked={onlyBad} onChange={e=>setOnlyBad(e.target.checked)}/> 해결 필요만 보기 ({badCount})</label>}
       </div>
+      {items.length>0 && badCount>0 && <div className="autobar" style={{marginTop:10}}>
+        해결 필요 {badCount}건 — {Object.entries(badBreak).map(([k,v])=>`${BAD_LABEL[k]||k} ${v}`).join(' · ')}
+      </div>}
       {err && <div className="err">{err}</div>}
       {result && <div className="autobar" style={{marginTop:12}}>등록 완료 {result.registered}건{result.error?` · 오류 ${result.error}건`:''}</div>}
       {items.length>0 && <div className="list" style={{marginTop:14,maxHeight:330,overflow:'auto'}}>
         <table className="ptable">
           <thead><tr><th>상태</th><th>회원</th><th>일시</th><th>수업</th><th>회원권/메시지</th></tr></thead>
-          <tbody>{items.map(item=>(
+          <tbody>{shown.map(item=>(
             <tr key={item.idx}>
               <td>{statusBadge(item.status)}</td>
               <td>
@@ -1623,14 +1679,36 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
                     {item.candidates.map(c=><option key={c.id} value={c.id}>{c.name} · {c.phone||'번호없음'}</option>)}
                   </select>
                 )}
+                {item.status==='missing_member' && (
+                  <button className="btn ghost sm" style={{marginTop:4,fontSize:12}}
+                    onClick={()=>setAddMember({idx:item.idx,name:item.memberName})}>＋ 이 회원 등록</button>
+                )}
               </td>
               <td>{item.date||'-'} {item.start||''}</td>
-              <td>{item.lessonName||lessonName} · {item.trainer||trainer}</td>
-              <td className="muted">{item.message}</td>
+              <td>
+                {item.lessonName||lessonName} · {item.trainer||trainer}
+                {item.status==='trainer_mismatch' && (
+                  <select value={rowTrainer[item.idx]||item.trainer||''} onChange={e=>changeRowTrainer(item.idx,e.target.value)}
+                    style={{display:'block',marginTop:4,width:'100%',fontSize:12}}>
+                    {[...new Set([item.trainer,...trainers])].filter(Boolean).map(t=><option key={t} value={t}>{t}(으)로 변경</option>)}
+                  </select>
+                )}
+              </td>
+              <td className="muted">
+                {item.message}
+                {(item.status==='no_membership'||item.status==='trainer_mismatch') && item.member && (
+                  <button className="btn ghost sm" style={{display:'block',marginTop:4,fontSize:12}}
+                    onClick={()=>setAddMs({member:item.member})}>＋ 회원권 등록</button>
+                )}
+              </td>
             </tr>
           ))}</tbody>
         </table>
       </div>}
+      {addMember && <AddMemberModal sb={sb} initName={addMember.name}
+        onClose={()=>setAddMember(null)} onSaved={memberCreated}/>}
+      {addMs && <RegisterModal sb={sb} member={addMs.member}
+        onClose={()=>setAddMs(null)} onSaved={()=>{ setAddMs(null); buildItems(); }}/>}
     </div></div>
   );
 }
@@ -2204,6 +2282,29 @@ function DashboardView({sb,onNav}){
     .map(l=>({l,d:dday(l.end_date)})).filter(x=>x.d!==null&&x.d<=14)
     .sort((a,b)=>a.d-b.d);
   const lkOver=lkSoon.filter(x=>x.d<0);
+  const lastLessonAgo=(()=>{
+    if(!lessons.length) return null;
+    const newest=Math.max(...lessons.map(l=>new Date(l.start_at).getTime()));
+    return Math.floor((Date.now()-newest)/86400000);
+  })();
+
+  // 생일 위젯이 "없습니다"만 보여주면 데이터가 비어서인지 진짜 없는지 구분이 안 된다.
+  const noBirth=(members||[]).filter(m=>!m.birth).length;
+
+  // 주간 스케줄 등록 현황 — 실사용의 54%가 이 작업인데 홈에 지표가 없었다.
+  // 이번 주/지난 주 등록 건수를 나란히 보여주고, 비었으면 바로 캘린더로 보낸다.
+  const weekStat=(()=>{
+    const d=new Date(t0); const dow=d.getDay();
+    const thisStart=new Date(d); thisStart.setDate(d.getDate()-dow);        // 이번 주 일요일
+    const nextStart=new Date(thisStart); nextStart.setDate(thisStart.getDate()+7);
+    const prevStart=new Date(thisStart); prevStart.setDate(thisStart.getDate()-7);
+    const inR=(l,a,b)=>{const t=new Date(l.start_at).getTime(); return t>=a.getTime()&&t<b.getTime();};
+    const cur=lessons.filter(l=>inR(l,thisStart,nextStart)).length;
+    const prev=lessons.filter(l=>inR(l,prevStart,thisStart)).length;
+    const upcoming=lessons.filter(l=>l.status==='예약'&&new Date(l.start_at).getTime()>=Date.now()).length;
+    return {cur,prev,upcoming,thisStart,nextStart};
+  })();
+
   // 이탈 위험 (PushPress 무출석 감지 + Zen Planner 출석급감 레드플래그)
   // 활성 회차권(PT) 보유 회원 중: 예정 예약 없음 + 최근 14일 완료수업 0건 = 무출석 / 이전 4주 평균 대비 절반 이하 = 급감
   const risk=(()=>{
@@ -2237,6 +2338,23 @@ function DashboardView({sb,onNav}){
     });
     return out.sort((a,b)=>((b.type==='none')-(a.type==='none'))||b.sort-a.sort);
   })();
+
+  // ★입력이 끊기면 이탈 위험은 통째로 거짓 경보가 된다.
+  //   이탈 위험은 "최근 14일 완료 수업 0건"으로 잡는데, 주간 스케줄을 등록하지 않으면
+  //   잘 다니는 회원까지 전부 걸린다. 2026-07-31 실측으로 모수의 71%가 위험으로 떴다.
+  //   ★판정 기준 주의: 처음엔 "마지막 수업이 7일 이상 지났는가"로 잡았는데 안 걸렸다.
+  //     띄엄띄엄이라도 몇 건은 들어오기 때문이다(당시 마지막 수업 5일 전, 그런데도 43명 위험).
+  //     실제 신호는 날짜가 아니라 **비율** — 위험군이 모수의 절반을 넘으면 회원 문제가 아니라 데이터 문제다.
+  const riskBase=(()=>{
+    const grace=ymd(new Date(Date.now()-14*86400000));
+    const start={};
+    (ms||[]).forEach(m=>{ if(m.status!=='활성'||!(m.total_count>0)) return;
+      const s=m.start_date||''; if(!(m.member_id in start)||s<start[m.member_id]) start[m.member_id]=s; });
+    return Object.keys(start).filter(id=>memById[id] && !((start[id]||'')>grace)).length;
+  })();
+  const riskRatio = riskBase>0 ? risk.length/riskBase : 0;
+  const feedStale = lastLessonAgo===null || riskRatio>=0.5;
+
   // 활성 회원 성별비 / 연령대 (브로제이 인사이트 대응)
   const actives=(members||[]).filter(m=>m.status==='활성');
   const genderCnt={남성:0,여성:0,미입력:0};
@@ -2300,8 +2418,25 @@ function DashboardView({sb,onNav}){
             </div>); })}
       </div>
       <div className="mp-cardbox">
-        <h3><span>🚨 이탈 위험</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{risk.length}명</span></h3>
-        {risk.length===0? <div className="muted">이탈 위험 신호가 없습니다<br/><span style={{fontSize:12}}>(활성 회차권 보유 회원 중 예정 예약 없이 2주간 수업이 없거나 급감하면 표시됩니다)</span></div> :
+        <h3><span>📅 주간 스케줄 등록</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>
+          앞으로 예정 {weekStat.upcoming}건</span></h3>
+        <div className="kv" style={{marginBottom:4}}><span>이번 주 등록</span><b style={{color:weekStat.cur===0?'#d98b7a':'var(--cream)'}}>{weekStat.cur}건</b></div>
+        <div className="kv"><span>지난 주</span><b className="muted">{weekStat.prev}건</b></div>
+        {weekStat.upcoming===0 && <p className="muted" style={{fontSize:12,margin:'10px 0 0'}}>
+          앞으로 예정된 수업이 하나도 없습니다. 주간 스케줄을 등록하면 이탈 위험·출석 통계가 다시 정확해집니다.</p>}
+        <div style={{marginTop:10}}>
+          <button className="btn sm" onClick={()=>onNav&&onNav('calendar')}>주간 스케줄 등록하러 가기 →</button>
+        </div>
+      </div>
+      <div className="mp-cardbox">
+        <h3><span>🚨 이탈 위험</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{feedStale?'집계 보류':risk.length+'명'}</span></h3>
+        {feedStale? <div className="muted">
+            {lastLessonAgo===null? '등록된 수업이 없어 이탈 위험을 계산할 수 없습니다.'
+              : `대상 ${riskBase}명 중 ${risk.length}명(${Math.round(riskRatio*100)}%)이 위험으로 잡혔습니다 — 실제 이탈이 아니라 수업이 등록되지 않은 것입니다.`}
+            <br/><span style={{fontSize:12}}>이 상태에서는 잘 다니는 회원까지 위험으로 잡히므로 목록을 감췄습니다. 주간 스케줄을 등록하면 다시 계산됩니다.</span>
+            <div style={{marginTop:10}}><button className="btn sm" onClick={()=>onNav&&onNav('calendar')}>캘린더로 이동 →</button></div>
+          </div> :
+          risk.length===0? <div className="muted">이탈 위험 신호가 없습니다<br/><span style={{fontSize:12}}>(활성 회차권 보유 회원 중 예정 예약 없이 2주간 수업이 없거나 급감하면 표시됩니다)</span></div> :
           risk.slice(0,15).map(r=>{ const m=memById[r.id]; return (
             <div className="dash-row" key={r.id} onClick={()=>openMember(r.id)}>
               <div><b>{m.name}</b> <span className="muted" style={{fontSize:13}}>· {m.assigned_trainer||'담당 미지정'}</span></div>
@@ -2334,7 +2469,9 @@ function DashboardView({sb,onNav}){
       </div>}
       <div className="mp-cardbox">
         <h3><span>🎂 오늘 생일</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{birthdays.length}명</span></h3>
-        {birthdays.length===0? <div className="muted">오늘 생일인 회원이 없습니다</div> :
+        {birthdays.length===0? <div className="muted">오늘 생일인 회원이 없습니다
+            {noBirth>0 && <><br/><span style={{fontSize:12}}>※ 생년월일이 없는 회원이 {noBirth}명({Math.round(noBirth/Math.max(1,(members||[]).length)*100)}%)이라 실제 생일을 놓칠 수 있습니다.</span></>}
+          </div> :
           birthdays.map(m=>(<div className="dash-row" key={m.id} onClick={()=>openMember(m.id)}>
             <div><b>{m.name}</b> <span className="muted" style={{fontSize:13}}>· {m.phone||''}</span></div>
             <span className="muted">{age(m.birth)}</span>
