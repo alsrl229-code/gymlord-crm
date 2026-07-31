@@ -2152,6 +2152,7 @@ function DashboardView({sb,onNav}){
   const [sel,setSel]=useState(null);
   const [lessons,setLessons]=useState([]);
   const [tasks,setTasks]=useState(null); // null=로딩, 'na'=notes_tasks.sql 미실행
+  const [lockers,setLockers]=useState([]);
   const [taskModal,setTaskModal]=useState(false);
   const [taskFor,setTaskFor]=useState(null); // {member, initTitle} — 위젯 행에서 만든 회원 할일
   async function load(){
@@ -2161,15 +2162,19 @@ function DashboardView({sb,onNav}){
     //  그 결과 잔여회차가 실제보다 많게 보여 재등록 대상 추출이 늦어졌다)
     try{ await sb.rpc('auto_complete_overdue'); }catch(e){}
     const cut=new Date(Date.now()-42*86400000).toISOString();
-    const [a,b,c,d]=await Promise.all([
+    const [a,b,c,d,e]=await Promise.all([
       fetchAll(()=>sb.from('members').select('*').order('name').order('id')),
       fetchAll(()=>sb.from('memberships').select('*').order('id')),
       sb.from('lessons').select('member_id,start_at,status').gte('start_at',cut).not('member_id','is',null).limit(5000),
-      sb.from('tasks').select('*').eq('done',false).order('due_date',{ascending:true,nullsFirst:false}).limit(100)
+      sb.from('tasks').select('*').eq('done',false).order('due_date',{ascending:true,nullsFirst:false}).limit(100),
+      // 락커는 회원권과 달리 자동 만료·회수가 없다. 방치되면 배정이 남아 "비어있음"에서 빠지고
+      // 재판매가 안 된다(2026-07-30에 34개·최고 703일 방치 발견). 만료 전에 연장을 받는 게 최선이라 홈에 띄운다.
+      sb.from('lockers').select('id,number,room,member_id,end_date,unlimited,status').not('member_id','is',null).limit(1000)
     ]);
     setMembers(a.data||[]); setMs(b.data||[]);
     setLessons(c.data||[]);
     setTasks(d.error?'na':(d.data||[]));
+    setLockers(e.data||[]);
   }
   async function completeTask(t){
     const {error}=await sb.from('tasks').update({done:true,done_at:new Date().toISOString()}).eq('id',t.id);
@@ -2193,6 +2198,12 @@ function DashboardView({sb,onNav}){
       if(!best[m.member_id]||m.end_date>best[m.member_id].end_date) best[m.member_id]=m; });
     return Object.values(best).sort((a,b)=>(b.end_date||'').localeCompare(a.end_date||'')); })();
   const unpaid=(ms||[]).filter(m=>(m.unpaid||0)>0).sort((a,b)=>b.unpaid-a.unpaid);
+  // 락커 만료·임박: 배정된 락커 중 무제한·고장 제외, D-14 이하(이미 지난 것 포함).
+  // 만료된 칸은 실물에 짐이 남아 있을 수 있어 자동 회수하지 않는다 — 사람이 확인하도록 띄우기만 한다.
+  const lkSoon=(lockers||[]).filter(l=>l.status!=='고장'&&!l.unlimited&&l.end_date)
+    .map(l=>({l,d:dday(l.end_date)})).filter(x=>x.d!==null&&x.d<=14)
+    .sort((a,b)=>a.d-b.d);
+  const lkOver=lkSoon.filter(x=>x.d<0);
   // 이탈 위험 (PushPress 무출석 감지 + Zen Planner 출석급감 레드플래그)
   // 활성 회차권(PT) 보유 회원 중: 예정 예약 없음 + 최근 14일 완료수업 0건 = 무출석 / 이전 4주 평균 대비 절반 이하 = 급감
   const risk=(()=>{
@@ -2356,6 +2367,18 @@ function DashboardView({sb,onNav}){
               <TaskBtn mid={m.member_id} title={`${nm(m.member_id)} 재등록 권유 (${fmtDate(m.end_date)} 만료)`}/></span>
           </div>))}
       </div>
+      {can('lockers') && <div className="mp-cardbox">
+        <h3><span>🔑 락커 만료 · 임박</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>
+          {lkOver.length>0? `만료 ${lkOver.length} · 임박 ${lkSoon.length-lkOver.length}` : `14일 내 · ${lkSoon.length}건`}</span></h3>
+        {lkSoon.length===0? <div className="muted">만료됐거나 14일 내 만료될 락커가 없습니다</div> :
+          lkSoon.slice(0,15).map(({l,d})=>(<div className="dash-row" key={l.id} onClick={()=>openMember(l.member_id)}>
+            <div><b>{l.number}번</b> <span className="muted" style={{fontSize:13}}>· {nm(l.member_id)||'(회원 없음)'}</span></div>
+            <span className="dash-rt"><span className={'dday'+(d<0?' expired':'')}>{d<0?`${-d}일 지남`:(d===0?'오늘 만료':'D-'+d)}</span>
+              <TaskBtn mid={l.member_id} title={`${nm(l.member_id)} 락커 ${l.number}번 ${d<0?'회수·연장 확인':'연장 안내'} (${fmtDate(l.end_date)} 만료)`}/></span>
+          </div>))}
+        {lkOver.length>0 && <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>
+          만료된 칸은 실물에 짐이 남았는지 먼저 확인하세요. 회수하면 비어있는 락커로 잡힙니다.</p>}
+      </div>}
       <div className="mp-cardbox">
         <h3><span>📊 활성 회원 분포</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{actives.length}명</span></h3>
         {actives.length===0? <div className="muted">활성 회원이 없습니다</div> : <>
