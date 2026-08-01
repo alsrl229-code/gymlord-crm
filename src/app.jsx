@@ -1252,14 +1252,44 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
         const c=(exist||[]).find(l=> l.start_at<e && (l.end_at||l.start_at)>s); if(c) clashes.push(`${di} ${hm(c.start_at)} (${c.lesson_name})`); }
       if(clashes.length && !confirm(`⚠️ ${fixedTrainer} 강사 기존 예약과 겹칩니다:\n${clashes.join('\n')}\n\n그래도 전부 예약할까요?`)){ setBusy(false); return; }
     }
+    // ★같은 회원·같은 시작시간 중복 방지.
+    //   주간 가져오기에는 있던 가드가 수동 예약에는 없었다(2026-08-01 발견).
+    //   가져오기에서 실패한 건을 손으로 다시 넣는 흐름에서 밟기 쉬운데,
+    //   중복 등록하면 예약이 2건 생기고 회차도 2번 깎인다.
+    {
+      const d0=new Date(`${dt}T00:00:00+09:00`).toISOString();
+      const dEnd=new Date(`${nthDate(n-1)}T23:59:59+09:00`).toISOString();
+      const {data:mine}=await sb.from('lessons').select('start_at,lesson_name,status')
+        .eq('member_id',sel.id).neq('status','취소').gte('start_at',d0).lte('start_at',dEnd);
+      const dups=[];
+      for(let i=0;i<n;i++){ const di=nthDate(i); const ts=new Date(`${di}T${start}:00+09:00`).getTime();
+        const hit=(mine||[]).find(l=>Math.abs(new Date(l.start_at).getTime()-ts)<60000);
+        if(hit) dups.push(`${di} ${start} (${hit.lesson_name||'수업'} · ${hit.status})`); }
+      if(dups.length){ setBusy(false);
+        return setErr(`이미 같은 시간에 ${sel.name} 회원의 수업이 있습니다:\n${dups.join('\n')}\n\n중복 등록하면 회차가 두 번 차감됩니다. 시간을 바꾸거나 기존 예약을 확인해주세요.`); }
+    }
     // 일괄 삽입
     const rows=[]; for(let i=0;i<n;i++){ const di=nthDate(i); const s=new Date(`${di}T${start}:00+09:00`).toISOString(); const e=new Date(new Date(s).getTime()+(parseInt(dur)||50)*60000).toISOString();
       rows.push({member_id:sel.id, membership_id:msId, start_at:s, end_at:e, lesson_name:name, trainer:fixedTrainer, status:'예약'}); }
     const {error}=await sb.from('lessons').insert(rows);
     if(error){ setBusy(false); return setErr('저장 실패: '+error.message); }
-    if(msId) for(let i=0;i<n;i++) await sb.rpc('consume_specific',{p_membership_id:msId}); // 예약 즉시 차감 × n
-    logAct(sb,'수업 예약',`${sel.name} · ${name} · ${dt} ${start}${n>1?` (매주 ×${n}회, ~${nthDate(n-1)})`:''}`);
-    setBusy(false); onSaved();
+    // ★차감 실패를 삼키면 "예약은 있는데 회차는 안 깎인" 상태가 소리 없이 생긴다.
+    //   예약 저장은 이미 끝났으므로 되돌리지 않고, 몇 건이 실패했는지 반드시 알린다.
+    //   (2026-07 이중차감의 거울상 — 그때는 두 번 깎였고 이건 안 깎이는 쪽이다)
+    let deducted=0, cFail='';
+    if(msId){
+      for(let i=0;i<n;i++){
+        const {error:cErr}=await sb.rpc('consume_specific',{p_membership_id:msId});
+        if(cErr){ cFail=cErr.message; break; }
+        deducted++;
+      }
+    }
+    logAct(sb,'수업 예약',`${sel.name} · ${name} · ${dt} ${start}${n>1?` (매주 ×${n}회, ~${nthDate(n-1)})`:''}${msId&&deducted<n?` ⚠차감 ${deducted}/${n}`:''}`);
+    setBusy(false);
+    if(msId && deducted<n){
+      alert(`⚠️ 예약 ${n}건은 저장됐지만 회차 차감이 ${n-deducted}건 실패했습니다.${cFail?`\n(${cFail})`:''}\n\n잔여 회차가 실제보다 많게 표시됩니다.\n회원 상세 → 회원권 수정에서 잔여 회차를 직접 맞춰주세요.`);
+    }
+    onSaved();
   }
   async function saveGuest(){
     setBusy(true); const [s,e]=times();
@@ -1332,6 +1362,27 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
   );
 }
 
+// ---------- 주간스케줄 관리도구 → CRM 직접 연동 (2026-08-01) ----------
+// 관리도구(github.io/gymlord-weekly-scheduler)와 CRM(github.io/gymlord-crm)은
+// **같은 오리진**이라 localStorage를 공유한다. 관리도구가 확정 일정을 여기 넣고
+// CRM을 `?import=1`로 열면, 캘린더가 '주간 스케줄 가져오기'를 그 일정으로 채운 채 자동으로 연다.
+//   → 복사 → 앱 전환 → 붙여넣기 3단계가 사라진다. 실사용의 54%가 이 작업이었다.
+// ★회원매칭·중복·시간겹침 검사는 기존 CRM 로직을 그대로 탄다. 자동으로 밀어넣지 않는 이유는
+//   동명이인·회원권없음은 사람이 판단해야 하는 항목이라 화면에서 풀어야 하기 때문이다.
+const HANDOFF_KEY='gl_schedule_handoff';
+const HANDOFF_TTL=30*60000;   // 30분 지난 전달분은 무시 — 지난 주차를 잘못 등록하는 사고 방지
+function takeScheduleHandoff(){
+  try{
+    const raw=localStorage.getItem(HANDOFF_KEY);
+    if(!raw) return null;
+    localStorage.removeItem(HANDOFF_KEY);   // 1회용: 새로고침해도 다시 뜨지 않는다
+    const h=JSON.parse(raw);
+    if(!h || !h.payload) return null;
+    if(Date.now()-(h.at||0) > HANDOFF_TTL) return null;
+    return h;
+  }catch(e){ return null; }
+}
+
 // ---------- 주간 스케줄 일괄 가져오기 ----------
 // 직전 설정 기억 — 매주 같은 값(강사·수업명·길이)을 다시 고르던 것을 없앤다.
 const IMPORT_PREFS='gl_import_prefs';
@@ -1339,10 +1390,11 @@ const BAD_LABEL={missing_member:'회원없음',ambiguous_member:'동명이인',n
   trainer_mismatch:'강사불일치',conflict:'시간겹침',invalid:'형식오류',error:'오류'};
 function loadImportPrefs(){ try{ return JSON.parse(localStorage.getItem(IMPORT_PREFS))||{}; }catch(e){ return {}; } }
 
-function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
+function ScheduleImportModal({sb,members,trainers,handoff,onClose,onSaved}){
   useEsc(onClose);
   const pref=useMemo(()=>loadImportPrefs(),[]);
-  const [text,setText]=useState('');
+  // 관리도구에서 넘어온 일정이 있으면 처음부터 채워둔다 → 아래 자동검사 effect가 바로 검사한다
+  const [text,setText]=useState(()=> handoff && handoff.payload ? JSON.stringify(handoff.payload,null,2) : '');
   const [items,setItems]=useState([]);
   const [err,setErr]=useState('');
   const [busy,setBusy]=useState(false);
@@ -1430,6 +1482,24 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
     return /대표/.test(name) ? '대표PT' : /1:1/.test(name) ? '1:1PT' : 'PT';
   }
   function normTrainer(v){ return String(v||'').trim(); }
+  // ★수업명 칸에 회원 이름이 들어오는 오염을 걸러낸다.
+  //   2026-08-01 실측: 7월 수업 283건 중 52건이 '주영님'·'희원님'·'구민주님'처럼
+  //   수업명이 아니라 회원명이었다. 이러면 수업 종류별 통계가 아예 불가능해진다.
+  //   ①회원명 그대로 ②'…님'만 붙은 것 ③이름 뒷부분만('김주영'→'주영님') → 기본 수업명으로 되돌린다.
+  //   ④'대표 PT 이진영'처럼 뒤에 이름이 덧붙은 것은 이름만 떼어낸다.
+  const dropHonor=s=>String(s||'').replace(/\s*(님|씨)\s*$/,'').trim();
+  function cleanLessonName(raw,memberName,fallback){
+    const s=String(raw||'').trim();
+    if(!s) return fallback;
+    const nm=String(memberName||'').trim();
+    if(!nm) return s;
+    const bare=dropHonor(s), nmBare=dropHonor(nm);
+    if(bare===nm || bare===nmBare) return fallback;                       // ①②
+    if(bare.length>=2 && nmBare.endsWith(bare)) return fallback;          // ③ 이름 뒷부분
+    const esc=nm.replace(/[.*+?^${}()|[\]\\]/g,'\\$&');                   // ④ 꼬리 제거
+    const cut=s.replace(new RegExp('\\s*'+esc+'\\s*(님|씨)?\\s*$'),'').trim();
+    return (cut && cut!==s) ? cut : s;
+  }
 
   async function buildItems(picksArg=picks){
     setErr('');
@@ -1452,7 +1522,9 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
       const memberName=String(row.member || row.name || row.customer || '').trim();
       const date=String(row.date || row.dateISO || '').trim();
       const start=String(row.start || row.time || row.startTime || '').trim();
-      const rowLesson=String(row.lessonType || row.lessonName || row.lesson_name || defaultLesson).trim();
+      const rowLessonRaw=String(row.lessonType || row.lessonName || row.lesson_name || defaultLesson).trim();
+      const rowLesson=cleanLessonName(rowLessonRaw,memberName,defaultLesson);
+      const lessonFixed=rowLesson!==rowLessonRaw;   // 정규화했으면 결과 표에 표시한다(조용히 바꾸지 않음)
       // 이 행만 강사를 바꾼 경우(강사불일치를 그 자리에서 푸는 용도)가 최우선
       const rowTrainerName=String(rowTrainer[idx] || row.trainer || defaultTrainer).trim();
       const rowDuration=parseInt(row.brojDurationMinutes || row.durationMinutes || defaultDuration)||60;
@@ -1465,6 +1537,7 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
         idx,row,memberName,date,start,
         startISO:time.startISO,endISO:time.endISO,startDate:time.start,endDate:time.end,
         lessonName:rowLesson || defaultLesson,
+        lessonFixed, lessonRaw:rowLessonRaw,
         trainer:rowTrainerName || defaultTrainer,
         duration:rowDuration
       };
@@ -1635,7 +1708,15 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
   return (
     <div className="modal-ov" onClick={onClose}><div className="modal" style={{maxWidth:860}} onClick={e=>e.stopPropagation()}>
       <div className="mhead"><h3>주간 스케줄 가져오기</h3><button className="xbtn" onClick={onClose}>✕</button></div>
-      <p className="muted" style={{fontSize:13,marginTop:0}}>주간 스케줄 관리도구의 자동등록 JSON을 붙여넣으면 CRM 캘린더 예약으로 일괄 등록합니다.</p>
+      {handoff && handoff.payload
+        ? <div className="autobar" style={{marginTop:0,marginBottom:12}}>
+            📥 주간 스케줄 관리도구에서 <b>{handoff.count||0}건</b>을 받았습니다{handoff.weekLabel?` · ${handoff.weekLabel}`:''} — 아래 검사 결과를 확인하고 등록하세요.
+          </div>
+        : handoff && handoff.missing
+        ? <div className="autobar" style={{marginTop:0,marginBottom:12,color:'#e0a23c'}}>
+            전달된 일정을 찾지 못했습니다 (30분이 지났거나 다른 브라우저입니다). 관리도구에서 다시 보내거나 JSON을 붙여넣어주세요.
+          </div>
+        : <p className="muted" style={{fontSize:13,marginTop:0}}>주간 스케줄 관리도구의 자동등록 JSON을 붙여넣으면 CRM 캘린더 예약으로 일괄 등록합니다.</p>}
       <div className="field"><label>스케줄 JSON</label>
         <textarea value={text} onChange={e=>{setText(e.target.value);setItems([]);setResult(null);setPicks({});}}
           placeholder="브로제이 자동등록 요청 또는 rows JSON을 그대로 붙여넣기"
@@ -1687,6 +1768,9 @@ function ScheduleImportModal({sb,members,trainers,onClose,onSaved}){
               <td>{item.date||'-'} {item.start||''}</td>
               <td>
                 {item.lessonName||lessonName} · {item.trainer||trainer}
+                {item.lessonFixed && <div className="muted" style={{fontSize:11,marginTop:2}}
+                  title="수업명 칸에 회원 이름이 들어와 있어 기본 수업명으로 바꿨습니다">
+                  ↳ 수업명 정규화 (원본 '{item.lessonRaw}')</div>}
                 {item.status==='trainer_mismatch' && (
                   <select value={rowTrainer[item.idx]||item.trainer||''} onChange={e=>changeRowTrainer(item.idx,e.target.value)}
                     style={{display:'block',marginTop:4,width:'100%',fontSize:12}}>
@@ -1804,6 +1888,21 @@ function CalendarView({sb}){
     sb.from('lessons').select('trainer').not('trainer','is',null).limit(5000).then(({data})=>setTrainerPool([...new Set((data||[]).map(r=>r.trainer).filter(Boolean))]));
     sb.from('trainer_colors').select('name,color').then(({data,error})=>{ if(!error&&data){ const m={}; data.forEach(r=>m[r.name]=r.color); setColorOverrides(m); } });
   },[]);
+  // 관리도구에서 `?import=1`로 넘어왔으면 가져오기 모달을 자동으로 연다.
+  // ★회원 목록이 도착한 뒤에 열어야 한다 — 비어 있는 상태로 검사하면 전부 '회원없음'으로 잡힌다.
+  const [handoff,setHandoff]=useState(null);
+  const handoffDone=useRef(false);
+  useEffect(()=>{
+    if(handoffDone.current) return;
+    if(!/[?&]import=1/.test(location.search)) return;
+    if(!members.length) return;
+    handoffDone.current=true;
+    const h=takeScheduleHandoff();
+    setHandoff(h || {missing:true});
+    setImporter(true);
+    // 주소창에서 ?import=1 을 지운다 — 새로고침할 때 또 열리지 않게
+    try{ history.replaceState(null,'',location.pathname+location.hash); }catch(e){}
+  },[members]);
 
   const memberById = useMemo(()=>{ const m={}; members.forEach(x=>m[x.id]=x); return m; },[members]);
   const memberName = id => (memberById[id]&&memberById[id].name) || '?';
@@ -2010,8 +2109,8 @@ function CalendarView({sb}){
 
     {booking && <BookingModal sb={sb} date={booking.date} members={members} trainers={trainers}
         onClose={()=>setBooking(null)} onSaved={()=>{setBooking(null);loadLessons();}}/>}
-    {importer && <ScheduleImportModal sb={sb} members={members} trainers={trainers}
-        onClose={()=>setImporter(false)} onSaved={()=>loadLessons()}/>}
+    {importer && <ScheduleImportModal sb={sb} members={members} trainers={trainers} handoff={handoff}
+        onClose={()=>{setImporter(false);setHandoff(null);}} onSaved={()=>loadLessons()}/>}
     {noshow && <NoshowModal lesson={noshow} onClose={()=>setNoshow(null)} onConfirm={r=>setStatus(noshow,'노쇼',r)}/>}
     {dayView && <DayModal date={dayView.date} items={byDate[dayView.date]||[]} memberName={memberName} chipStyle={chipStyle}
         onClose={()=>setDayView(null)} onCtx={c=>setCtx(c)} onMember={l=>{ setDayView(null); openMemberDetail(l); }}/>}
@@ -3525,7 +3624,8 @@ const NAV_ICONS={
 function App(){
   const [sb]=useState(getClient);
   const [authed,setAuthed]=useState(null);
-  const [view,setView]=useState('home');
+  // 관리도구가 `?import=1`로 열면 홈이 아니라 캘린더로 바로 들어간다(가져오기 모달이 거기서 열린다)
+  const [view,setView]=useState(()=> /[?&]import=1/.test(location.search) ? 'calendar' : 'home');
   const [me,setMe]=useState(null); // 내 staff 행 {role,perms,email,name}
   const [showPolicy,setShowPolicy]=useState(false);
   const [showPw,setShowPw]=useState(false);
