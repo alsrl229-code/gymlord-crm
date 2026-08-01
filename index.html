@@ -424,8 +424,13 @@
   .chip.완료{border-color:#5a9e7a;color:#7dc4a0}
   .chip.휴강{border-color:#7a8a84;color:var(--muted);text-decoration:line-through}
   .chip.노쇼{border-color:#c4624f;color:#d98b7a}
-  .ctx{position:fixed;background:var(--forest2);border:1px solid var(--line);border-radius:8px;z-index:40;min-width:150px;box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden}
-  .ctx button{display:block;width:100%;text-align:left;background:none;border:none;color:var(--cream);padding:10px 14px;font-size:14px;cursor:pointer}
+  /* 우클릭 메뉴: body로 포털된다(app.jsx CtxMenu 주석 참조). 폭은 내용에 맞추되 화면을 넘지 않게. */
+  .ctx{position:fixed;background:var(--forest2);border:1px solid var(--line);border-radius:8px;z-index:40;
+    min-width:190px;max-width:min(300px,calc(100vw - 16px));box-shadow:0 10px 34px rgba(0,0,0,.55);overflow:hidden}
+  .ctx-head{padding:8px 14px;font-size:12px;color:var(--muted);border-bottom:1px solid var(--line);
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  /* 항목이 두 줄로 접히면 ('수업 휴강 (+1 복 구)') 읽기 어렵다 — 한 줄 고정 */
+  .ctx button{display:block;width:100%;text-align:left;background:none;border:none;color:var(--cream);padding:10px 14px;font-size:14px;cursor:pointer;white-space:nowrap}
   .ctx button:hover{background:#1a2c26}
   .ctx button.danger{color:#d98b7a}
   .modal-ov{position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:30;display:flex;align-items:center;justify-content:center;padding:16px}
@@ -474,6 +479,11 @@
   /* 회원목록 선택 액션바 (BroJ 스타일 하단 플로팅) */
   .selbar{position:fixed;left:50%;transform:translateX(-50%);bottom:18px;z-index:15;display:flex;align-items:center;gap:12px;
     background:var(--forest2);border:1px solid var(--brass-dim);border-radius:12px;padding:10px 16px;box-shadow:0 10px 34px rgba(0,0,0,.55)}
+  /* ★위 `.main>div{animation:gl-fadeIn}`은 transform을 애니메이션한다 → 애니메이션이 우선이라
+     .selbar의 translateX(-50%) 가운데정렬을 덮어써서 폭의 절반만큼 오른쪽으로 밀렸다(2026-08-01 실측 91px).
+     여기서는 transform을 건드리지 않는 페이드만 쓴다. (선택자 우선순위를 .main>div보다 높게) */
+  @keyframes gl-fadeFlat{from{opacity:0}to{opacity:1}}
+  .main>div.selbar{animation:gl-fadeFlat .18s ease-out both}
   .selbar .cnt{font-size:14px;font-weight:700}
   .btn.danger{background:var(--danger);color:#fff}
   .btn.ghost.danger{background:transparent;border:1px solid rgba(196,98,79,.5);color:#d98b7a}

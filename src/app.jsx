@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo, useRef, useContext } from 'react';
+import React, { useState, useEffect, useLayoutEffect, useMemo, useRef, useContext } from 'react';
 import { createRoot } from 'react-dom/client';
 import { createPortal } from 'react-dom';
 import { createClient } from '@supabase/supabase-js';
@@ -1797,6 +1797,35 @@ function ScheduleImportModal({sb,members,trainers,handoff,onClose,onSaved}){
   );
 }
 
+// ---------- 우클릭 메뉴 (수업 완료/휴강/노쇼) ----------
+// ★반드시 body로 포털한다.
+//   `.main>div`에 fadeIn 애니메이션이 걸려 있는데(index.html `.main>div{animation:gl-fadeIn ... both}`),
+//   transform을 건드리는 애니메이션은 **값이 항등행렬이어도** 그 요소를 position:fixed 자식의
+//   기준 박스(containing block)로 만든다. 그래서 메뉴를 캘린더 안에 두면 left/top이 뷰포트가 아니라
+//   그 div 기준이 되어 클릭 지점에서 한참 오른쪽에 떴다(2026-08-01 실측: +349px, 금요일 열은 화면 밖 67px 잘림).
+//   → body로 빼면 기준이 뷰포트로 돌아온다. (AGENTS.md의 backdrop-filter 함정과 같은 계열)
+// ★폭을 상수로 가정하지 않는다. 예전엔 `innerWidth-160`으로 접었는데 실제 메뉴는 그보다 넓어서
+//   오른쪽 끝에서 글씨가 잘렸다. 렌더 후 실측해서, 오른쪽이 모자라면 클릭 지점의 왼쪽으로 펼친다.
+function CtxMenu({x,y,onClose,children}){
+  const ref=useRef(null);
+  const [pos,setPos]=useState({left:x,top:y,ready:false});
+  useLayoutEffect(()=>{
+    const el=ref.current; if(!el) return;
+    const {width,height}=el.getBoundingClientRect();
+    const M=8;   // 화면 가장자리 여백
+    const left = (x+width+M > window.innerWidth)  ? Math.max(M, x-width)  : x;
+    const top  = (y+height+M > window.innerHeight)? Math.max(M, y-height) : y;
+    setPos({left,top,ready:true});
+  },[x,y]);
+  return createPortal(
+    <div className="ctx" ref={ref}
+      style={{left:pos.left,top:pos.top,visibility:pos.ready?'visible':'hidden'}}
+      onClick={e=>e.stopPropagation()}
+      onContextMenu={e=>{e.preventDefault();e.stopPropagation();}}>
+      {children}
+    </div>, document.body);
+}
+
 // ---------- 그날 전체보기 ----------
 function DayModal({date,items,memberName,chipStyle,onClose,onCtx,onMember}){
   useEsc(onClose);
@@ -2098,14 +2127,14 @@ function CalendarView({sb}){
     </div>
     )}
 
-    {ctx && (<div className="ctx" style={{left:ctx.x,top:ctx.y,transform:`translate(${ctx.x>window.innerWidth-200?'-100%':'0'}, ${ctx.y>window.innerHeight-220?'-100%':'0'})`}} onClick={e=>e.stopPropagation()}>
-      <div style={{padding:'8px 14px',fontSize:12,color:'var(--muted)',borderBottom:'1px solid var(--line)'}}>{ctx.l.member_id?memberName(ctx.l.member_id)+' · ':''}{ctx.l.lesson_name} · {hmRange(ctx.l)}</div>
+    {ctx && (<CtxMenu x={ctx.x} y={ctx.y} onClose={()=>setCtx(null)}>
+      <div className="ctx-head">{ctx.l.member_id?memberName(ctx.l.member_id)+' · ':''}{ctx.l.lesson_name} · {hmRange(ctx.l)}</div>
       <button onClick={()=>setStatus(ctx.l,'완료')}>✓ 수업 완료</button>
       <button onClick={()=>setStatus(ctx.l,'휴강')}>⊘ 수업 휴강 (+1 복구)</button>
       <button onClick={()=>setNoshow(ctx.l)}>✗ 수업 노쇼 (차감 유지)</button>
       {(ctx.l.status!=='예약') && <button onClick={()=>setStatus(ctx.l,'예약')}>↺ 예약으로 되돌리기</button>}
       <button className="danger" onClick={()=>del(ctx.l)}>🗑 수업 삭제</button>
-    </div>)}
+    </CtxMenu>)}
 
     {booking && <BookingModal sb={sb} date={booking.date} members={members} trainers={trainers}
         onClose={()=>setBooking(null)} onSaved={()=>{setBooking(null);loadLessons();}}/>}
