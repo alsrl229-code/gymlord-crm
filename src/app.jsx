@@ -2098,7 +2098,7 @@ function CalendarView({sb}){
     </div>
     )}
 
-    {ctx && (<div className="ctx" style={{left:Math.min(ctx.x,window.innerWidth-160),top:Math.min(ctx.y,window.innerHeight-220)}} onClick={e=>e.stopPropagation()}>
+    {ctx && (<div className="ctx" style={{left:ctx.x,top:ctx.y,transform:`translate(${ctx.x>window.innerWidth-200?'-100%':'0'}, ${ctx.y>window.innerHeight-220?'-100%':'0'})`}} onClick={e=>e.stopPropagation()}>
       <div style={{padding:'8px 14px',fontSize:12,color:'var(--muted)',borderBottom:'1px solid var(--line)'}}>{ctx.l.member_id?memberName(ctx.l.member_id)+' · ':''}{ctx.l.lesson_name} · {hmRange(ctx.l)}</div>
       <button onClick={()=>setStatus(ctx.l,'완료')}>✓ 수업 완료</button>
       <button onClick={()=>setStatus(ctx.l,'휴강')}>⊘ 수업 휴강 (+1 복구)</button>
