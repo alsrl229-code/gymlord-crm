@@ -2932,6 +2932,193 @@ function SalesView({sb}){
   </div>);
 }
 
+// ---------- 수업 통계 ----------
+// "선생님별로 몇 개를, 언제, 어떻게 했는지"를 한 화면에서 본다.
+//   몇 개 → 요약 카드 + 강사별 표
+//   언제  → 일별 막대 + 요일×시간대 히트맵
+//   어떻게 → 완료/노쇼/휴강/예약 구분
+// ★매출 탭의 '강사별 실적'과 다른 점: 이쪽은 돈이 아니라 **수업 자체**가 주제라
+//   매출 권한 없는 프리랜서도 볼 수 있고(캘린더 권한), 시간대·요일 분포를 다룬다.
+const DOW_LABEL=['일','월','화','수','목','금','토'];
+function LessonStatsView({sb}){
+  const [ref,setRef]=useState(()=>{const d=new Date();return {y:d.getFullYear(),m:d.getMonth()};});
+  const [rows,setRows]=useState(null);
+  const [members,setMembers]=useState({});
+  const [colors,setColors]=useState({});
+  const [pick,setPick]=useState('all');     // 강사 필터
+  const [err,setErr]=useState('');
+  useEffect(()=>{ (async()=>{
+    setRows(null); setErr('');
+    const s=new Date(ref.y,ref.m,1), e=new Date(ref.y,ref.m+1,1);
+    const {data,error}=await fetchAll(()=>sb.from('lessons')
+      .select('id,start_at,end_at,lesson_name,trainer,status,member_id')
+      .gte('start_at',s.toISOString()).lt('start_at',e.toISOString()).order('start_at'));
+    if(error){ setErr(error.message); setRows([]); return; }
+    setRows(data||[]);
+  })(); },[ref]);
+  useEffect(()=>{
+    fetchAll(()=>sb.from('members').select('id,name').order('id')).then(({data})=>{
+      const o={}; (data||[]).forEach(m=>o[m.id]=m.name); setMembers(o); });
+    sb.from('trainer_colors').select('name,color').then(({data})=>{
+      const o={}; (data||[]).forEach(r=>o[r.name]=r.color); setColors(o); });
+  },[]);
+
+  const all=rows||[];
+  const trainers=useMemo(()=>[...new Set(all.map(l=>l.trainer||'미지정'))].sort((a,b)=>a.localeCompare(b,'ko')),[all]);
+  const color=t=>colors[t]||TRAINER_PALETTE[Math.max(0,trainers.indexOf(t))%TRAINER_PALETTE.length];
+  const view=pick==='all'? all : all.filter(l=>(l.trainer||'미지정')===pick);
+
+  const cnt=s=>view.filter(l=>l.status===s).length;
+  const done=cnt('완료'), booked=cnt('예약'), noshow=cnt('노쇼'), rest=cnt('휴강');
+  const total=view.length;
+  // 실제로 진행된 수업 = 완료 + 노쇼(차감 유지되므로 진행분으로 본다)
+  const held=done+noshow;
+
+  const daysInMonth=new Date(ref.y,ref.m+1,0).getDate();
+  const byDay=useMemo(()=>{ const a=Array.from({length:daysInMonth},()=>0);
+    view.forEach(l=>{ if(l.status==='휴강') return; const d=new Date(l.start_at).getDate();
+      if(d>=1&&d<=daysInMonth) a[d-1]++; }); return a; },[view,daysInMonth]);
+  const maxDay=Math.max(1,...byDay);
+
+  // 요일 × 시간대 — "언제 수업이 몰리는가"
+  const heat=useMemo(()=>{ const h={}; let mx=0;
+    view.forEach(l=>{ if(l.status==='휴강') return; const d=new Date(l.start_at);
+      const key=d.getDay()+'_'+d.getHours(); h[key]=(h[key]||0)+1; if(h[key]>mx) mx=h[key]; });
+    return {h,mx}; },[view]);
+  const hours=useMemo(()=>{ const s=new Set();
+    view.forEach(l=>{ if(l.status!=='휴강') s.add(new Date(l.start_at).getHours()); });
+    return [...s].sort((a,b)=>a-b); },[view]);
+
+  // 강사별 집계 (필터와 무관하게 항상 전체 기준 — 비교가 목적이므로)
+  const perTrainer=useMemo(()=>{
+    const o={};
+    all.forEach(l=>{ const t=l.trainer||'미지정';
+      const v=o[t]=o[t]||{done:0,booked:0,noshow:0,rest:0,mem:new Set(),names:{}};
+      if(l.status==='완료')v.done++; else if(l.status==='예약')v.booked++;
+      else if(l.status==='노쇼')v.noshow++; else if(l.status==='휴강')v.rest++;
+      if(l.member_id)v.mem.add(l.member_id);
+      const n=l.lesson_name||'-'; v.names[n]=(v.names[n]||0)+1; });
+    return Object.entries(o).map(([t,v])=>({t,...v,held:v.done+v.noshow,tot:v.done+v.booked+v.noshow+v.rest}))
+      .sort((a,b)=>b.held-a.held||b.tot-a.tot);
+  },[all]);
+  const heldAll=perTrainer.reduce((s,x)=>s+x.held,0);
+
+  function move(d){ setRef(r=>{ let m=r.m+d,y=r.y; if(m<0){m=11;y--;} if(m>11){m=0;y++;} return {y,m}; }); }
+  const isThisMonth=(()=>{const d=new Date();return d.getFullYear()===ref.y&&d.getMonth()===ref.m;})();
+  function exportCSV(){
+    const out=[['강사','진행(완료+노쇼)','완료','노쇼','휴강','예정','수업회원수','비중%']];
+    perTrainer.forEach(x=>out.push([x.t,x.held,x.done,x.noshow,x.rest,x.booked,x.mem.size,
+      heldAll?Math.round(x.held/heldAll*100):0]));
+    downloadCSV(`수업통계_${ref.y}-${pad(ref.m+1)}.csv`,out);
+  }
+
+  // 도넛 (진행 기준)
+  const donut=(()=>{ const R=54,C=2*Math.PI*R; let acc=0;
+    return perTrainer.filter(x=>x.held>0).map(x=>{ const frac=heldAll?x.held/heldAll:0;
+      const seg={t:x.t,dash:`${C*frac} ${C*(1-frac)}`,off:-C*acc,color:color(x.t),pct:Math.round(frac*100)};
+      acc+=frac; return seg; }); })();
+
+  return (<div>
+    <div className="sales-nav">
+      <button onClick={()=>move(-1)}>← 이전달</button>
+      <div className="per">{ref.y}년 {ref.m+1}월{isThisMonth?' (이번 달)':''}</div>
+      <button onClick={()=>move(1)}>다음달 →</button>
+    </div>
+    {err && <div className="err">불러오지 못했습니다: {err}</div>}
+    {rows===null? <div className="empty">불러오는 중...</div> : <>
+    <div className="stats">
+      <div className="stat"><div className="n">{held}</div><div className="l">진행한 수업 (완료+노쇼)</div></div>
+      <div className="stat"><div className="n" style={{color:'#7dc4a0'}}>{done}</div><div className="l">완료</div></div>
+      <div className="stat"><div className="n" style={{color:noshow?'#d98b7a':'var(--muted)'}}>{noshow}</div><div className="l">노쇼</div></div>
+      <div className="stat"><div className="n" style={{color:'var(--brass)'}}>{booked}</div><div className="l">예정</div></div>
+      <div className="stat"><div className="n muted">{rest}</div><div className="l">휴강</div></div>
+    </div>
+
+    {trainers.length>0 && <div className="trainer-legend">
+      <button className={'tl-chip'+(pick==='all'?' on':'')} onClick={()=>setPick('all')}>전체 강사</button>
+      {trainers.map(t=>(
+        <button key={t} className={'tl-chip'+(pick===t?' on':'')} onClick={()=>setPick(p=>p===t?'all':t)}
+          style={pick===t?{background:color(t),color:trainerFg(color(t)),borderColor:'transparent'}:undefined}>
+          <i style={{background:color(t)}}/>{t}
+        </button>))}
+      {pick!=='all' && <span className="muted" style={{fontSize:12,alignSelf:'center'}}>· '{pick}' 강사만 보는 중 (아래 표는 항상 전체)</span>}
+      <button className="btn ghost sm" style={{marginLeft:'auto'}} onClick={exportCSV}>⤓ 엑셀</button>
+    </div>}
+
+    {total===0? <div className="empty" style={{marginTop:16}}>{ref.m+1}월에 등록된 수업이 없습니다.</div> : <>
+    <div className="mp-cardbox" style={{marginBottom:16}}>
+      <h3><span>일별 수업 · {ref.m+1}월</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>휴강 제외 · 최다 {maxDay}건</span></h3>
+      <div className="saleschart">
+        {byDay.map((v,i)=><div key={i} className="bar" style={{height:Math.max(2,v/maxDay*100)+'%',opacity:v?1:.18}} title={`${ref.m+1}/${i+1} · ${v}건`}/>)}
+      </div>
+      <div className="saleschart-x">{byDay.map((v,i)=><span key={i}>{(i+1)%5===0||i===0?i+1:''}</span>)}</div>
+    </div>
+
+    <div className="dash-grid" style={{marginBottom:16}}>
+      <div className="mp-cardbox">
+        <h3><span>강사별 비중</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>진행 {heldAll}건</span></h3>
+        {heldAll===0? <div className="muted">진행된 수업이 없습니다</div> :
+        <div style={{display:'flex',alignItems:'center',gap:18,flexWrap:'wrap'}}>
+          <svg viewBox="0 0 140 140" style={{width:140,height:140,flex:'none',transform:'rotate(-90deg)'}}>
+            {donut.map(s=>(<circle key={s.t} cx="70" cy="70" r="54" fill="none" stroke={s.color} strokeWidth="22"
+              strokeDasharray={s.dash} strokeDashoffset={s.off}/>))}
+          </svg>
+          <div style={{flex:1,minWidth:150}}>
+            {donut.map(s=>(<div key={s.t} className="kv" style={{padding:'3px 0'}}>
+              <span style={{display:'flex',alignItems:'center',gap:7}}>
+                <i style={{width:10,height:10,borderRadius:3,background:s.color,display:'inline-block'}}/>{s.t}</span>
+              <b>{s.pct}%</b></div>))}
+          </div>
+        </div>}
+      </div>
+
+      <div className="mp-cardbox">
+        <h3><span>요일 · 시간대 분포</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{pick==='all'?'전체':pick}</span></h3>
+        {hours.length===0? <div className="muted">표시할 수업이 없습니다</div> :
+        <div style={{overflowX:'auto'}}>
+          <table className="heat"><tbody>
+            <tr><th></th>{DOW_LABEL.map((d,i)=><th key={i}>{d}</th>)}</tr>
+            {hours.map(h=>(<tr key={h}>
+              <th>{pad(h)}시</th>
+              {DOW_LABEL.map((_,dw)=>{ const n=heat.h[dw+'_'+h]||0;
+                return <td key={dw} title={`${DOW_LABEL[dw]} ${pad(h)}시 · ${n}건`}
+                  style={{background:n?`rgba(176,141,87,${0.14+0.72*(n/heat.mx)})`:'transparent',
+                          color:n/heat.mx>0.55?'#1b1205':'var(--muted)'}}>{n||''}</td>; })}
+            </tr>))}
+          </tbody></table>
+          <div className="muted" style={{fontSize:11,marginTop:6}}>진한 칸일수록 수업이 몰린 시간대입니다 (휴강 제외)</div>
+        </div>}
+      </div>
+    </div>
+
+    <div className="mp-cardbox">
+      <h3><span>강사별 상세</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{ref.m+1}월 · 전체 기준</span></h3>
+      <table className="ptable">
+        <thead><tr><th>강사</th>
+          <th style={{textAlign:'right'}}>진행</th><th style={{textAlign:'right'}}>완료</th>
+          <th style={{textAlign:'right'}}>노쇼</th><th style={{textAlign:'right'}}>휴강</th>
+          <th style={{textAlign:'right'}}>예정</th><th style={{textAlign:'right'}}>수업회원</th>
+          <th style={{textAlign:'right'}}>비중</th></tr></thead>
+        <tbody>{perTrainer.map(x=>(<tr key={x.t}>
+          <td style={{fontWeight:700}}><span style={{display:'inline-block',width:9,height:9,borderRadius:3,background:color(x.t),marginRight:7}}/>{x.t}</td>
+          <td style={{textAlign:'right',fontWeight:700}}>{x.held}</td>
+          <td style={{textAlign:'right'}}>{x.done}</td>
+          <td style={{textAlign:'right',color:x.noshow?'#d98b7a':undefined}}>{x.noshow}</td>
+          <td style={{textAlign:'right'}} className="muted">{x.rest}</td>
+          <td style={{textAlign:'right',color:'var(--brass)'}}>{x.booked}</td>
+          <td style={{textAlign:'right'}}>{x.mem.size}명</td>
+          <td style={{textAlign:'right'}}>{heldAll?Math.round(x.held/heldAll*100):0}%</td>
+        </tr>))}</tbody>
+      </table>
+      <p className="muted" style={{fontSize:12,margin:'10px 0 0'}}>
+        '진행' = 완료 + 노쇼 (노쇼도 회차가 차감되므로 수행분으로 봅니다) · '예정'은 아직 지나지 않은 예약입니다.
+      </p>
+    </div>
+    </>}
+    </>}
+  </div>);
+}
+
 // ---------- 상품 관리 ----------
 const PROD_CATS=['PT','헬스','1:1','컨디셔닝','락커','기타'];
 function ProductsView({sb}){
@@ -3709,6 +3896,7 @@ const NAV_ICONS={
   lockers:(<svg {..._ni}><circle cx="8.3" cy="12" r="3.7"/><path d="M12 12h8.5M16.8 12v3.3M20.5 12v2.4"/></svg>),
   sales:(<svg {..._ni}><rect x="2.8" y="6.4" width="18.4" height="11.2" rx="1.8"/><circle cx="12" cy="12" r="2.6"/><path d="M6.1 12h.01M17.9 12h.01"/></svg>),
   products:(<svg {..._ni}><path d="M11.9 3.5H5.7A2.2 2.2 0 0 0 3.5 5.7v6.2c0 .58.23 1.14.64 1.55l7.4 7.4a2.2 2.2 0 0 0 3.1 0l6.2-6.2a2.2 2.2 0 0 0 0-3.1l-7.4-7.4a2.2 2.2 0 0 0-1.54-.65Z"/><circle cx="8.2" cy="8.2" r="1.25"/></svg>),
+  stats:(<svg {..._ni}><path d="M4 20V4"/><path d="M4 20h16"/><rect x="7.4" y="12" width="3.2" height="5.4" rx="1"/><rect x="12.4" y="8.4" width="3.2" height="9" rx="1"/><rect x="17.4" y="10.4" width="3.2" height="7" rx="1"/></svg>),
   logs:(<svg {..._ni}><rect x="4.6" y="4" width="14.8" height="17" rx="2"/><path d="M8.6 9.2h6.8M8.6 13h6.8M8.6 16.8h4.2"/></svg>),
   staff:(<svg {..._ni}><path d="M12 3.2l6.5 2.4v5.1c0 4.1-2.7 7.2-6.5 8.3-3.8-1.1-6.5-4.2-6.5-8.3V5.6L12 3.2Z"/><path d="M9.3 11.7l1.9 1.9 3.5-3.7"/></svg>),
 };
@@ -3768,6 +3956,7 @@ function App(){
     ['members','회원','members'],
     ['calendar','캘린더','calendar'],
     ['lockers','락커','lockers'],
+    ['stats','수업통계','calendar'],   // 돈이 아니라 수업이 주제 → 캘린더 권한이면 볼 수 있다
     ['sales','매출','sales'],
     ['products','상품','products'],
     ['logs','로그','logs'],
@@ -3810,6 +3999,7 @@ function App(){
          shownView==='members'? <MembersView sb={sb}/> :
          shownView==='calendar'? <CalendarView sb={sb}/> :
          shownView==='lockers'? <LockersView sb={sb}/> :
+         shownView==='stats'? <LessonStatsView sb={sb}/> :
          shownView==='sales'? <SalesView sb={sb}/> :
          shownView==='products'? <ProductsView sb={sb}/> :
          shownView==='staff'? <StaffAdmin sb={sb}/> : <LogsView sb={sb} onOpenMember={openMemberById}/>}

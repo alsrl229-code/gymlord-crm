@@ -515,6 +515,12 @@
   .sales-nav .per{font-size:18px;font-weight:800}
   .sales-nav button{background:none;border:none;color:var(--brass);font-size:14px;font-weight:700;cursor:pointer;padding:6px 10px;border-radius:8px}
   .sales-nav button:hover{background:var(--forest)}
+  /* 수업통계 — 요일×시간대 히트맵 */
+  .heat{border-collapse:separate;border-spacing:3px;font-size:12px;width:100%}
+  .heat th{color:var(--muted);font-weight:600;font-size:11px;text-align:center;padding:2px 4px;white-space:nowrap}
+  .heat th:first-child{text-align:right;width:38px}
+  .heat td{text-align:center;padding:5px 0;border-radius:6px;min-width:30px;font-weight:700;
+    border:1px solid var(--line);font-variant-numeric:tabular-nums}
   .saleschart{display:flex;align-items:flex-end;gap:3px;height:150px;padding-top:10px}
   .saleschart .bar{flex:1;min-width:6px;background:var(--brass-dim);border-radius:3px 3px 0 0;min-height:2px;transition:background .1s}
   .saleschart .bar:hover{background:var(--brass)}
@@ -550,6 +556,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=80"></script>
+<script src="app.bundle.js?v=81"></script>
 </body>
 </html>
