@@ -150,10 +150,13 @@ function useDaysSinceBackup(sb){
   return days;
 }
 
+// ★lessons는 계속 쌓인다(2026-08 기준 493건, 월 ~250건). limit(5000)에 정렬이 없으면
+//   1~2년 뒤 잘린 5000건이 '아무거나'가 되어 강사가 목록에서 사라질 수 있다.
+//   최신순으로 읽으면 최근 활동한 강사는 항상 포함된다.
 async function loadActiveTrainerNames(sb){
   const [ms,ls,tc]=await Promise.all([
     sb.from('memberships').select('trainer').eq('status','활성').not('trainer','is',null).limit(5000),
-    sb.from('lessons').select('trainer').not('trainer','is',null).limit(5000),
+    sb.from('lessons').select('trainer').not('trainer','is',null).order('start_at',{ascending:false}).limit(5000),
     sb.from('trainer_colors').select('name').limit(5000)
   ]);
   const names=new Set();
@@ -293,7 +296,10 @@ function RegisterModal({sb,member,onClose,onSaved}){
       const {error:payErr}=await sb.from('payments').insert({member_id:member.id,membership_id:ins.id,amount:_rec,paid_at:sd||ymd(t),method:_unpaid>0?'일부결제':'등록',pay_method:payMethod});
       if(payErr){ setBusy(false); return setErr(`회원권은 등록됐지만 결제기록 저장에 실패했습니다: ${payErr.message}\n매출에 반영되지 않았으니 결제 내역에서 직접 추가해주세요.`); }
     }
-    await sb.from('members').update({status:'활성'}).eq('id',member.id);
+    // 이 갱신이 조용히 실패하면 회원권은 있는데 회원 상태는 '미등록'으로 남는다
+    // (자가진단의 '회원 상태 불일치'가 정확히 그 모양이다). 실패하면 알려서 손으로 고치게 한다.
+    const {error:stErr}=await sb.from('members').update({status:'활성'}).eq('id',member.id);
+    if(stErr) alert(`회원권은 등록됐지만 회원 상태를 '활성'으로 바꾸지 못했습니다.\n${stErr.message}\n\n회원 정보 수정에서 상태를 확인해주세요.`);
     logAct(sb,'회원권 등록',`${member.name} · ${name}${_amt?` · ${_amt.toLocaleString()}원`:''}${_unpaid?` (미수금 ${_unpaid.toLocaleString()}원)`:''}`);
     setBusy(false); onSaved();
   }
@@ -1157,7 +1163,8 @@ function AddMemberModal({sb,onClose,onSaved,initName}){
     // 중복 회원 방지: 같은 전화번호가 이미 있으면 경고(그래도 등록할지 확인)
     const pd=phoneDigits(phone);
     if(pd.length>=8){
-      const {data:dups}=await sb.from('members').select('id,name,phone').limit(2000);
+      // limit(2000)이면 회원이 그 이상 늘었을 때 중복을 조용히 놓친다 → 끝까지 훑는다
+      const {data:dups}=await fetchAll(()=>sb.from('members').select('id,name,phone').order('id'));
       const hit=(dups||[]).find(m=>phoneDigits(m.phone)===pd);
       if(hit && !confirm(`이미 '${hit.name}' 회원이 이 번호(${hit.phone||''})로 등록되어 있습니다.\n\n동명이인이 아니라면 중복일 수 있어요.\n그래도 새로 등록할까요?`)){ setBusy(false); return; }
     }
@@ -1914,7 +1921,7 @@ function CalendarView({sb}){
   })(); },[cur,mode,anchor,isMobile]);
   useEffect(()=>{
     fetchAll(()=>sb.from('members').select('id,name,phone,status').order('name').order('id')).then(({data})=>setMembers(data||[]));
-    sb.from('lessons').select('trainer').not('trainer','is',null).limit(5000).then(({data})=>setTrainerPool([...new Set((data||[]).map(r=>r.trainer).filter(Boolean))]));
+    sb.from('lessons').select('trainer').not('trainer','is',null).order('start_at',{ascending:false}).limit(5000).then(({data})=>setTrainerPool([...new Set((data||[]).map(r=>r.trainer).filter(Boolean))]));
     sb.from('trainer_colors').select('name,color').then(({data,error})=>{ if(!error&&data){ const m={}; data.forEach(r=>m[r.name]=r.color); setColorOverrides(m); } });
   },[]);
   // 관리도구에서 `?import=1`로 넘어왔으면 가져오기 모달을 자동으로 연다.
@@ -1957,17 +1964,45 @@ function CalendarView({sb}){
     return s; };
 
   // 차감 상태: 휴강만 미차감, 그 외(예약/완료/노쇼)는 차감 반영
+  // ★회차 조정과 상태 변경 중 하나만 성공하면 회차가 조용히 어긋난다. 게다가 예전엔 실패해도
+  //   logAct가 "수업 완료"라고 찍어서 **감사 로그가 사실과 달라졌다**(장부로 쓰는 앱에서 제일 위험).
+  //   → 회차를 먼저 조정하고, 상태 변경이 실패하면 반대 RPC로 되돌린다(consume↔restore가 대칭이라 가능).
+  //     로그는 둘 다 성공했을 때만 남긴다.
   async function setStatus(l,to,reason){
+    let undo=null;   // 상태 변경 실패 시 회차를 원위치시킬 RPC
     if(l.membership_id){
       const wasC = l.status!=='휴강', willC = to!=='휴강';
-      if(!wasC && willC) await sb.rpc('consume_specific',{p_membership_id:l.membership_id});
-      else if(wasC && !willC) await sb.rpc('restore_session',{p_membership_id:l.membership_id});
+      if(!wasC && willC){
+        const {error}=await sb.rpc('consume_specific',{p_membership_id:l.membership_id});
+        if(error){ alert('회차 차감에 실패해 중단했습니다.\n'+error.message); setCtx(null); setNoshow(null); return; }
+        undo='restore_session';
+      } else if(wasC && !willC){
+        const {error}=await sb.rpc('restore_session',{p_membership_id:l.membership_id});
+        if(error){ alert('회차 복구에 실패해 중단했습니다.\n'+error.message); setCtx(null); setNoshow(null); return; }
+        undo='consume_specific';
+      }
     }
-    await sb.from('lessons').update({status:to, noshow_reason: to==='노쇼'?(reason||null):null}).eq('id',l.id);
+    const {error}=await sb.from('lessons').update({status:to, noshow_reason: to==='노쇼'?(reason||null):null}).eq('id',l.id);
+    if(error){
+      if(undo) await sb.rpc(undo,{p_membership_id:l.membership_id});   // 회차만 바뀌는 상태를 막는다
+      alert('수업 상태를 바꾸지 못했습니다.\n'+error.message+(undo?'\n(회차는 원래대로 되돌렸습니다)':''));
+      setCtx(null); setNoshow(null); return;
+    }
     logAct(sb,'수업 '+to,`${l.member_id?memberName(l.member_id)+' · ':''}${l.lesson_name} · ${fmtDT(l.start_at)}${to==='노쇼'&&reason?` (사유: ${reason})`:''}`);
     setCtx(null); setNoshow(null); loadLessons();
   }
-  async function del(l){ if(!confirm('이 수업을 삭제할까요?')) return; if(l.status!=='휴강' && l.membership_id) await sb.rpc('restore_session',{p_membership_id:l.membership_id}); await sb.from('lessons').delete().eq('id',l.id); logAct(sb,'수업 삭제',`${l.member_id?memberName(l.member_id)+' · ':''}${l.lesson_name} · ${fmtDT(l.start_at)}`); setCtx(null); loadLessons(); }
+  // ★삭제를 먼저 하고 회차를 복구한다. 반대로 하면 삭제가 실패했을 때 회차만 늘어난다.
+  async function del(l){
+    if(!confirm('이 수업을 삭제할까요?')) return;
+    const {error}=await sb.from('lessons').delete().eq('id',l.id);
+    if(error){ alert('수업 삭제에 실패했습니다.\n'+error.message); setCtx(null); return; }
+    if(l.status!=='휴강' && l.membership_id){
+      const {error:rErr}=await sb.rpc('restore_session',{p_membership_id:l.membership_id});
+      if(rErr) alert(`수업은 삭제됐지만 회차 복구에 실패했습니다.\n${rErr.message}\n\n회원 상세 → 회원권 수정에서 잔여 회차를 직접 +1 해주세요.`);
+    }
+    logAct(sb,'수업 삭제',`${l.member_id?memberName(l.member_id)+' · ':''}${l.lesson_name} · ${fmtDT(l.start_at)}`);
+    setCtx(null); loadLessons();
+  }
   // 수업 칩 좌클릭 → 회원 상세(요일 헤더 아래 패널). 우클릭은 상태메뉴 유지.
   async function openMemberDetail(l,e){
     if(!l||!l.member_id) return;
@@ -2361,6 +2396,7 @@ function DashboardView({sb,onNav}){
   const [lockers,setLockers]=useState([]);
   const [taskModal,setTaskModal]=useState(false);
   const [taskFor,setTaskFor]=useState(null); // {member, initTitle} — 위젯 행에서 만든 회원 할일
+  const [loadErr,setLoadErr]=useState('');
   async function load(){
     try{ await sb.rpc('expire_overdue'); }catch(e){}
     // 지난 예약 자동완료 + 회차차감. 캘린더 탭에서만 돌던 것을 홈에서도 돌린다.
@@ -2377,9 +2413,15 @@ function DashboardView({sb,onNav}){
       // 재판매가 안 된다(2026-07-30에 34개·최고 703일 방치 발견). 만료 전에 연장을 받는 게 최선이라 홈에 띄운다.
       sb.from('lockers').select('id,number,room,member_id,end_date,unlimited,status').not('member_id','is',null).limit(1000)
     ]);
+    // ★조회 실패를 빈 배열로 삼키면 "회원 0명 · 매출 0원"으로 보인다 — 데이터가 날아간 것처럼 읽힌다.
+    //   (세션 만료가 대표적인 원인. 실제로 JWT 만료 시 이 화면이 전부 0이 된다)
+    //   실패했으면 숫자를 0으로 덮어쓰지 말고 배너로 알린다.
+    const failed=[a,b,c,e].find(r=>r && r.error);
+    if(failed){ setLoadErr(failed.error.message||'조회에 실패했습니다.'); return; }
+    setLoadErr('');
     setMembers(a.data||[]); setMs(b.data||[]);
     setLessons(c.data||[]);
-    setTasks(d.error?'na':(d.data||[]));
+    setTasks(d.error?'na':(d.data||[]));   // tasks는 SQL 미실행일 수 있어 별도 처리
     setLockers(e.data||[]);
   }
   async function completeTask(t){
@@ -2505,6 +2547,26 @@ function DashboardView({sb,onNav}){
     onClick={e=>{e.stopPropagation(); setTaskFor({member:memById[mid],initTitle:title});}}>＋할일</button> : null;
   const dsb=useDaysSinceBackup(sb);
   const hcBad=useHealthAlert(sb,role);
+  // 조회 실패는 숫자를 0으로 보여주는 대신 이유를 말해준다.
+  // 세션 만료(JWT/PGRST303)면 다시 로그인해야 풀리므로 그렇게 안내한다.
+  if(loadErr){
+    const expired=/JWT|PGRST303|expired|refresh/i.test(loadErr);
+    return (<div className="empty" style={{textAlign:'left',maxWidth:560,margin:'40px auto',lineHeight:1.7}}>
+      <div style={{fontSize:34,marginBottom:10,textAlign:'center'}}>⚠️</div>
+      <b style={{display:'block',textAlign:'center',marginBottom:10,color:'var(--cream)'}}>
+        {expired?'로그인이 만료되어 데이터를 불러오지 못했습니다':'데이터를 불러오지 못했습니다'}</b>
+      <div className="muted" style={{fontSize:13}}>
+        {expired
+          ? '데이터는 그대로 있습니다. 다시 로그인하면 정상으로 돌아옵니다.'
+          : '네트워크 상태를 확인하고 다시 시도해주세요. 화면의 숫자가 0으로 보이는 것을 막기 위해 표시를 멈췄습니다.'}
+        <div style={{marginTop:8,fontSize:12,opacity:.75}}>{loadErr}</div>
+      </div>
+      <div style={{display:'flex',gap:8,marginTop:16,justifyContent:'center'}}>
+        <button className="btn" onClick={()=>{setLoadErr('');load();}}>다시 시도</button>
+        {expired && <button className="btn ghost" onClick={()=>sb.auth.signOut()}>다시 로그인</button>}
+      </div>
+    </div>);
+  }
   if(members===null) return <div className="empty">불러오는 중...</div>;
   return (<div>
     {hcBad && hcBad.length>0 && <div className="backup-remind"
@@ -3659,7 +3721,15 @@ function App(){
   const [showPolicy,setShowPolicy]=useState(false);
   const [showPw,setShowPw]=useState(false);
   const [globalSel,setGlobalSel]=useState(null); // 통합 검색으로 연 회원
-  useEffect(()=>{ if(!sb)return; sb.auth.getSession().then(({data})=>setAuthed(!!data.session)); },[]);
+  // ★세션을 처음 한 번만 확인하면, 데스크에 열어둔 채로 세션이 끊겼을 때
+  //   화면은 로그인된 상태로 남고 모든 조회가 실패한다 → 회원 0명·매출 0원으로 보여
+  //   "데이터가 날아갔다"고 오해하게 된다. onAuthStateChange로 로그아웃을 즉시 반영한다.
+  useEffect(()=>{
+    if(!sb) return;
+    sb.auth.getSession().then(({data})=>setAuthed(!!data.session));
+    const {data:sub}=sb.auth.onAuthStateChange((_evt,session)=>{ setAuthed(!!session); if(!session) setMe(null); });
+    return ()=>{ try{ sub.subscription.unsubscribe(); }catch(e){} };
+  },[]);
   useEffect(()=>{ if(authed && sb) maybeDailySnapshot(sb); },[authed]);
   useEffect(()=>{
     if(!authed || !sb){ setMe(null); return; }
@@ -3721,7 +3791,9 @@ function App(){
         </nav>
         <div className="side-spacer"/>
         <div className="side-me">{me.name||me.email}<small>{isMaster?'마스터':'프리랜서'}</small></div>
-        <div style={{display:'flex',gap:10,margin:'0 0 8px'}}>
+        {/* side-links: 모바일에서는 숨긴다 — 하단 탭바에 남으면 메뉴 8개를 밀어내 버튼이 19px이 된다.
+            ★display를 인라인 style로 주면 미디어쿼리가 못 이긴다. 스타일은 CSS(.side-links)에 둔다. */}
+        <div className="side-links">
           <button className="link" style={{margin:0,fontSize:12}} onClick={()=>setShowPw(true)}>비밀번호 변경</button>
           <button className="link" style={{margin:0,fontSize:12}} onClick={()=>setShowPolicy(true)}>개인정보 처리방침</button>
         </div>

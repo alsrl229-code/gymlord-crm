@@ -270,6 +270,13 @@
       background:rgba(21,36,32,.95);backdrop-filter:blur(14px);-webkit-backdrop-filter:blur(14px)}
     .side .logo,.side-orn,.side-spacer{display:none}
     .side>.btn{display:none} /* 데스크탑 로그아웃은 하단바에서 숨김, 우상단 원형 버튼으로 대체 */
+    /* ★계정정보·링크가 하단 탭바에 남아 있으면 메뉴 8개를 밀어낸다.
+       2026-08-01 실측(386px): 탭바 386px 중 이 둘이 225px(58%)을 차지해
+       .side-nav가 153px로 눌리고 버튼 하나가 19px이 됐다(아이콘 22px보다 좁아 잘림).
+       숨기면 메뉴가 폭을 다 쓰고 버튼이 ~47px가 된다. */
+    /* ★`.side-me{...}`·`.side-links{...}` 기본 규칙이 이 미디어블록보다 **뒤에** 선언돼 있다.
+       미디어쿼리는 우선순위를 올려주지 않으므로 같은 (0,1,0)이면 뒤가 이긴다 → 자식 선택자로 (0,2,0)을 만든다. */
+    .side>.side-me,.side>.side-links{display:none}
     .side-nav{flex:1;flex-direction:row;justify-content:space-between;gap:0;overflow:hidden}
     .nav-it{flex:1 1 0;min-width:0;flex-direction:column;align-items:center;justify-content:center;
       gap:2px;padding:6px 2px;font-size:10px;font-weight:600;text-align:center;border-radius:8px;
@@ -294,6 +301,10 @@
     .mlist-table .name{white-space:normal;line-height:1.22;word-break:keep-all;overflow-wrap:anywhere}
     .mlist-table .phone{white-space:normal;line-height:1.22;overflow-wrap:anywhere;font-size:13px}
     .row.logrow{grid-template-columns:110px 100px 1fr;} .row.logrow>div:last-child{display:none}
+    /* 상품 목록은 6열 고정폭이라 모바일에서 마지막 '상태'열이 .list{overflow:hidden}에 잘렸다.
+       종류·기간 열을 접고 상품명/횟수/가격/상태만 남긴다. */
+    .row.prod{grid-template-columns:minmax(0,1.4fr) 50px minmax(0,1fr) 60px;gap:6px;padding:12px 10px}
+    .row.prod>div:nth-child(2),.row.prod>div:nth-child(4){display:none}
     /* 모바일에서 카드 hover 상승 효과 끔 (터치 → 잔상) */
     .mp-cardbox:hover,.stat:hover,.locker:hover{transform:none}
     .dash-row:hover{background:transparent;padding-left:2px;padding-right:2px;margin:0}
@@ -520,6 +531,7 @@
   .lk-st.만료{background:rgba(196,98,79,.18);color:#d98b7a}
   .lk-st.고장{background:rgba(217,164,79,.18);color:#d9a44f}
   /* 직원 권한 */
+  .side-links{display:flex;gap:10px;margin:0 0 8px}
   .side-me{font-size:12px;color:var(--muted);padding:6px 4px 8px;line-height:1.35;border-top:1px solid var(--brassline);margin-top:6px}
   .side-me small{display:block;color:var(--brass);font-weight:700;font-size:11px;margin-top:2px}
   .stafflist{display:flex;flex-direction:column;gap:12px;margin-top:6px}
@@ -538,6 +550,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=79"></script>
+<script src="app.bundle.js?v=80"></script>
 </body>
 </html>
