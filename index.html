@@ -118,7 +118,8 @@
      하지만 폰에서 가장 잦은 동작이 "회원 찾기"라 회원 탭까지 들어가야 하는 건 손해다.
      → 상단 고정 바로 되살린다(우상단 로그아웃 버튼 자리는 비켜서 배치). */
   @media(max-width:860px){
-    .gsearch{display:block;position:fixed;top:10px;left:12px;right:60px;z-index:16;padding:0}
+    /* 우상단 로그아웃 버튼을 없앴으므로 검색창이 폭을 다 쓴다 */
+    .gsearch{display:block;position:fixed;top:10px;left:12px;right:12px;z-index:16;padding:0}
     .gsearch>input{height:38px;border-radius:19px;font-size:14px;
       background:rgba(21,36,32,.94);backdrop-filter:blur(10px);-webkit-backdrop-filter:blur(10px)}
     .gsearch-res{left:0;right:0;max-height:60vh}
@@ -255,7 +256,7 @@
   .sheet>button:active{background:rgba(176,141,87,.12)}
   .sheet>button.danger{color:#d98b7a}
   .sheet>button.cancel{text-align:center;color:var(--muted);border-radius:0;margin-top:4px;border-top:1px solid var(--line)}
-  .mob-logout{display:none}
+  /* .mob-logout 제거됨 (2026-08-09) */
   @media(max-width:860px){
     .shell{flex-direction:column}
     /* 사이드바 → 하단 고정 탭바 */
@@ -285,13 +286,7 @@
     .nav-it.on::before{content:"";position:absolute;top:-5px;left:22%;right:22%;height:2px;background:var(--metal);border-radius:0 0 3px 3px}
     .nav-ic{width:22px;height:22px}
     .nav-ic svg{width:22px;height:22px}
-    /* 우상단 원형 로그아웃 (모바일 전용) */
-    .mob-logout{display:flex;position:fixed;top:12px;right:14px;z-index:16;
-      width:38px;height:38px;align-items:center;justify-content:center;
-      background:rgba(21,36,32,.92);backdrop-filter:blur(8px);
-      border:1px solid var(--brassline);border-radius:50%;
-      color:var(--muted);font-size:15px;cursor:pointer;font-family:inherit}
-    .mob-logout:hover{color:var(--brass);border-color:var(--brass)}
+    /* (제거됨) 우상단 원형 로그아웃 — 검색창 바로 옆이라 오터치가 잦아 홈 하단 텍스트 버튼으로 옮김 */
     /* 메인 컨텐츠가 하단바(아래)와 상단 검색바(위)에 안 가리게 */
     .main{padding:56px 14px calc(72px + env(safe-area-inset-bottom))}
     .mpage{left:0;padding-bottom:calc(72px + env(safe-area-inset-bottom))}
@@ -515,6 +510,57 @@
   .sales-nav .per{font-size:18px;font-weight:800}
   .sales-nav button{background:none;border:none;color:var(--brass);font-size:14px;font-weight:700;cursor:pointer;padding:6px 10px;border-radius:8px}
   .sales-nav button:hover{background:var(--forest)}
+  /* 홈 맨 아래 로그아웃 — 모바일에서만 보인다(데스크탑은 사이드바에 있음) */
+  .home-logout{display:none}
+  @media(max-width:860px){
+    .home-logout{display:block;margin:26px 0 8px;padding-top:18px;border-top:1px solid var(--line)}
+    .home-logout .btn{width:100%;padding:13px 0;font-size:15px}
+  }
+  /* ── 모바일 전용 캘린더: 일/주/월 전환 ── */
+  .mob-seg{margin:0 0 10px}
+  .mob-seg button{padding:9px 0;font-size:14px}
+  /* 주 보기 — 구글 캘린더식 시간 격자 */
+  .mw{margin-bottom:6px}
+  .mw-head{display:grid;grid-template-columns:30px repeat(7,1fr);gap:1px;margin-bottom:2px}
+  .mw-gut{}
+  .mw-dh{background:transparent;border:none;color:var(--muted);font-size:11px;padding:4px 0 6px;
+    display:flex;flex-direction:column;align-items:center;gap:1px;font-family:inherit;cursor:pointer;border-radius:8px}
+  .mw-dh b{font-size:14px;color:var(--cream);font-weight:700}
+  .mw-dh.sun,.mw-dh.sun b{color:#d98b7a}
+  .mw-dh.sat,.mw-dh.sat b{color:#7fa8c9}
+  .mw-dh.today{background:rgba(176,141,87,.14)}
+  .mw-dh.today b{color:var(--brass)}
+  .mw-body{display:grid;grid-template-columns:30px repeat(7,1fr);gap:1px;
+    background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .mw-times{background:var(--forest);position:relative}
+  .mw-t{font-size:10px;color:var(--muted);text-align:right;padding:2px 4px 0;
+    border-top:1px solid var(--line);box-sizing:border-box}
+  .mw-t:first-child{border-top:none}
+  /* 시간선은 배경 그라디언트로 그린다 (요소 수를 늘리지 않으려고) */
+  .mw-col{position:relative;background:var(--forest2);
+    background-image:repeating-linear-gradient(to bottom,var(--line) 0 1px,transparent 1px 100%)}
+  .mw-col.today{background-color:rgba(176,141,87,.07)}
+  .mw-ev{position:absolute;border:none;border-radius:5px;padding:2px 3px;overflow:hidden;
+    font-size:10px;font-weight:700;line-height:1.15;text-align:left;font-family:inherit;cursor:pointer;
+    display:flex;flex-direction:column;gap:1px}
+  .mw-ev i{font-style:normal;font-size:9px;opacity:.75;font-weight:600}
+  .mw-ev.narrow{padding:2px 1px;font-size:9px;letter-spacing:-.3px}
+  /* 월 보기 — 날짜칸에 회원명 칩 */
+  .mm{margin-bottom:6px}
+  .mm-dow{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;margin-bottom:3px}
+  .mm-dow span{text-align:center;font-size:11px;color:var(--muted);font-weight:700}
+  .mm-dow .sun{color:#d98b7a} .mm-dow .sat{color:#7fa8c9}
+  .mm-grid{display:grid;grid-template-columns:repeat(7,1fr);gap:1px;
+    background:var(--line);border:1px solid var(--line);border-radius:10px;overflow:hidden}
+  .mm-cell{background:var(--forest2);border:none;min-height:72px;padding:3px 2px 2px;
+    display:flex;flex-direction:column;gap:2px;align-items:stretch;font-family:inherit;cursor:pointer}
+  .mm-cell.other{opacity:.35}
+  .mm-cell.today{background:rgba(176,141,87,.12)}
+  .mm-num{font-size:11px;color:var(--muted);font-weight:700;text-align:center}
+  .mm-cell.today .mm-num{color:var(--brass)}
+  .mm-ev{font-style:normal;font-size:9.5px;font-weight:700;border-radius:4px;padding:2px 3px;
+    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;line-height:1.25}
+  .mm-more{font-style:normal;font-size:9px;color:var(--muted);text-align:right;padding-right:2px}
   /* 수업통계 — 요일×시간대 히트맵 */
   .heat{border-collapse:separate;border-spacing:3px;font-size:12px;width:100%}
   .heat th{color:var(--muted);font-weight:600;font-size:11px;text-align:center;padding:2px 4px;white-space:nowrap}
@@ -556,6 +602,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=82"></script>
+<script src="app.bundle.js?v=83"></script>
 </body>
 </html>

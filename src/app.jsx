@@ -17,10 +17,27 @@ const OWNER_EMAILS = ['alsrl229@gmail.com']; // 안전망: staff 행이 없거�
 const PermCtx = React.createContext({ role:'master', perms:{}, can:()=>true, email:'', name:'' });
 function usePerm(){ return useContext(PermCtx); }
 
+// ---------- 자동 로그인 ----------
+// 체크하면 로그인 정보를 localStorage에 둔다 → 브라우저를 껐다 켜도 로그인 상태가 남는다.
+// 해제하면 sessionStorage로 → 그 탭/브라우저를 닫으면 로그아웃된다(공용 PC용).
+// ★기본값은 '켬'. 현장에서 폰으로 쓰는 게 주 용도라 매번 로그인하는 게 더 불편하다.
+const AUTO_KEY='gl_autologin';
+function autoLoginOn(){ try{ return localStorage.getItem(AUTO_KEY)!=='0'; }catch(e){ return true; } }
+function setAutoLogin(on){ try{ localStorage.setItem(AUTO_KEY, on?'1':'0'); }catch(e){} }
+// 저장 위치를 매 호출마다 판단한다 — 클라이언트는 로그인 화면보다 먼저 만들어지기 때문.
+const authStorage={
+  getItem(k){ try{ const v=localStorage.getItem(k); return v!==null? v : sessionStorage.getItem(k); }catch(e){ return null; } },
+  setItem(k,v){ try{
+    if(autoLoginOn()){ localStorage.setItem(k,v); sessionStorage.removeItem(k); }
+    else { sessionStorage.setItem(k,v); localStorage.removeItem(k); }
+  }catch(e){} },
+  removeItem(k){ try{ localStorage.removeItem(k); sessionStorage.removeItem(k); }catch(e){} },
+};
+
 function getClient(){
   const url = localStorage.getItem(LS.url), key = localStorage.getItem(LS.key);
   if(!url || !key || !/^https?:\/\//i.test(url)) return null;
-  try { return createClient(url, key); }
+  try { return createClient(url, key, {auth:{storage:authStorage, persistSession:true, autoRefreshToken:true}}); }
   catch(e){ console.error('Supabase 연결 실패:', e); localStorage.removeItem(LS.url); localStorage.removeItem(LS.key); return null; }
 }
 
@@ -235,8 +252,10 @@ function Setup({onDone}){
 // ---------- 로그인 ----------
 function Login({sb,onIn}){
   const [email,setEmail]=useState(''),[pw,setPw]=useState(''),[err,setErr]=useState(''),[busy,setBusy]=useState(false);
+  const [keep,setKeep]=useState(autoLoginOn);
   async function go(){
     setBusy(true); setErr('');
+    setAutoLogin(keep);   // ★로그인 **전에** 정해야 세션이 원하는 곳(local/session)에 저장된다
     const {error}=await sb.auth.signInWithPassword({email:email.trim(),password:pw});
     setBusy(false);
     if(error) setErr('로그인 실패: '+error.message); else onIn();
@@ -250,6 +269,13 @@ function Login({sb,onIn}){
       <input value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==='Enter'&&go()} />
       <label>비밀번호</label>
       <input type="password" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==='Enter'&&go()} />
+      <label className="chk" style={{margin:'12px 0 4px',justifyContent:'flex-start'}}>
+        <input type="checkbox" checked={keep} onChange={e=>setKeep(e.target.checked)}/> 자동 로그인 (다음에 바로 들어가기)
+      </label>
+      <div className="muted" style={{fontSize:11,margin:'0 0 10px',lineHeight:1.5}}>
+        {keep? '이 기기에 로그인 상태가 유지됩니다. 공용 PC에서는 꺼주세요.'
+             : '브라우저를 닫으면 로그아웃됩니다.'}
+      </div>
       <button className="btn" disabled={busy} onClick={go}>{busy?'확인 중...':'로그인'}</button>
       <div className="err">{err}</div>
       <button className="link" onClick={()=>{localStorage.removeItem(LS.url);localStorage.removeItem(LS.key);location.reload();}}>연결설정 다시하기</button>
@@ -1984,8 +2010,11 @@ function CalendarView({sb}){
   const [memberDetail,setMemberDetail]=useState(null); // 칩 좌클릭 → 회원 상세(패널)
   const [mode,setMode]=useState('month');
   const [anchor,setAnchor]=useState(()=>new Date(today.getFullYear(),today.getMonth(),today.getDate()));
-  // 모바일(≤860px) = 현장용 아젠다 뷰
+  // 모바일(≤860px) = 현장용 전용 캘린더
   const [isMobile,setIsMobile]=useState(()=>window.matchMedia('(max-width:860px)').matches);
+  // 모바일 보기 모드: 일(아젠다) · 주(시간격자) · 월(달력). 마지막 선택을 기억한다.
+  const [mobView,setMobView]=useState(()=>{ try{ return localStorage.getItem('gl_mobview')||'day'; }catch(e){ return 'day'; } });
+  useEffect(()=>{ try{ localStorage.setItem('gl_mobview',mobView); }catch(e){} },[mobView]);
   useEffect(()=>{ const mq=window.matchMedia('(max-width:860px)'); const h=e=>setIsMobile(e.matches);
     mq.addEventListener('change',h); return ()=>mq.removeEventListener('change',h); },[]);
   const [sheet,setSheet]=useState(null); // 모바일 액션시트 대상 수업
@@ -1995,7 +2024,11 @@ function CalendarView({sb}){
 
   async function loadLessons(){
     let s,e;
-    if(isMobile){ s=new Date(weekStart); e=new Date(weekEnd); } // 아젠다: 보는 주만 로드
+    // 모바일: 월 보기면 그 달을, 일·주 보기면 보는 주만 로드
+    if(isMobile){
+      if(mobView==='month'){ s=new Date(anchor.getFullYear(),anchor.getMonth(),1); e=new Date(anchor.getFullYear(),anchor.getMonth()+1,1); }
+      else { s=new Date(weekStart); e=new Date(weekEnd); }
+    }
     else if(mode==='day'){ s=new Date(anchor.getFullYear(),anchor.getMonth(),anchor.getDate()); e=new Date(s); e.setDate(e.getDate()+1); }
     else if(mode==='week'){ s=new Date(weekStart); e=new Date(weekEnd); }
     else { s=new Date(cur.getFullYear(),cur.getMonth(),1); e=new Date(cur.getFullYear(),cur.getMonth()+1,1); }
@@ -2006,7 +2039,7 @@ function CalendarView({sb}){
     const {data:n}=await sb.rpc('auto_complete_overdue');
     if(n>0) setAutoMsg(`지난 예약 ${n}건을 자동 완료 처리했습니다.`);
     loadLessons();
-  })(); },[cur,mode,anchor,isMobile]);
+  })(); },[cur,mode,anchor,isMobile,mobView]);
   useEffect(()=>{
     fetchAll(()=>sb.from('members').select('id,name,phone,status').order('name').order('id')).then(({data})=>setMembers(data||[]));
     sb.from('lessons').select('trainer').not('trainer','is',null).order('start_at',{ascending:false}).limit(5000).then(({data})=>setTrainerPool([...new Set((data||[]).map(r=>r.trainer).filter(Boolean))]));
@@ -2159,42 +2192,154 @@ function CalendarView({sb}){
             style={{width:18,height:18,border:'none',background:'none',padding:0,cursor:'pointer'}}/>{t}
         </label>))}
     </div>}
-    {isMobile ? (()=>{ // ── 모바일: 현장용 아젠다 ──
+    {isMobile ? (()=>{ // ── 모바일 전용 캘린더: 일 / 주 / 월 ──
       const selKey=ymd(anchor);
       const items=(byDate[selKey]||[]).slice().sort((a,b)=>a.start_at<b.start_at?-1:1);
       const nowIso=new Date().toISOString();
       const nextL=(selKey===todayKey)? items.find(l=>l.status==='예약'&&l.start_at>=nowIso) : null;
       const DOW=['일','월','화','수','목','금','토'];
+      const isMonth=mobView==='month';
+      // 이동: 월 보기는 한 달씩, 일·주 보기는 한 주씩
+      const step=n=>{ const d=new Date(anchor);
+        if(isMonth) d.setMonth(d.getMonth()+n); else d.setDate(d.getDate()+7*n);
+        setAnchor(d); setCur(new Date(d.getFullYear(),d.getMonth(),1)); };
+      // 칩 라벨: 색으로 강사를 구분하므로 이름은 회원만 (사용자 요청)
+      const label=l=> l.member_id? memberName(l.member_id) : (l.lesson_name||'수업');
+      const evColor=l=> l.trainer? trainerColors[l.trainer] : '#3a4b44';
+      const evStyle=l=>{ const bg=evColor(l);
+        const s={background:bg,color:trainerFg(bg)};
+        if(l.status==='완료') s.opacity=.68;
+        else if(l.status==='휴강'){ s.opacity=.38; s.textDecoration='line-through'; }
+        else if(l.status==='노쇼'){ s.opacity=.55; s.textDecoration='line-through'; }
+        return s; };
+
       return (<div className="agenda">
         <div className="ag-head">
-          <button className="btn ghost sm" onClick={()=>{const d=new Date(anchor);d.setDate(d.getDate()-7);setAnchor(d);}}>‹</button>
+          <button className="btn ghost sm" onClick={()=>step(-1)}>‹</button>
           <button className="mtitle-btn" onClick={e=>{e.stopPropagation(); setPicker(p=>!p);}}>{anchor.getFullYear()}년 {anchor.getMonth()+1}월 ▾</button>
-          <button className="btn ghost sm" onClick={()=>{const d=new Date(anchor);d.setDate(d.getDate()+7);setAnchor(d);}}>›</button>
+          <button className="btn ghost sm" onClick={()=>step(1)}>›</button>
           <button className="btn ghost sm" style={{marginLeft:'auto'}} onClick={goToday}>오늘</button>
           {picker && <MonthPicker cur={anchor} onPick={(y,m)=>{ const d=new Date(y,m-1,1); setAnchor(d); setCur(d); setPicker(false); }}/>}
         </div>
-        <div className="ag-week">
-          {weekDates.map((d,i)=>{ const k=ymd(d); const cnt=(byDate[k]||[]).length;
-            return (<button key={i} className={'ag-day'+(k===selKey?' sel':'')+(k===todayKey?' today':'')}
-                onClick={()=>{ if(k===selKey) setBooking({date:k}); else setAnchor(new Date(d)); }}>
-              <span className="ag-dow">{DOW[i]}</span>
-              <span className="ag-num">{d.getDate()}</span>
-              <span className={'ag-dot'+(cnt?' on':'')}/>
-            </button>); })}
+        <div className="seg mob-seg">
+          {[['day','일'],['week','주'],['month','월']].map(([k,lbl])=>(
+            <button key={k} className={mobView===k?'on':''} onClick={()=>setMobView(k)}>{lbl}</button>))}
         </div>
-        <div className="ag-title">{anchor.getMonth()+1}월 {anchor.getDate()}일 ({DOW[anchor.getDay()]}) · 수업 {items.length}건 <span style={{opacity:.6}}>· 카드=완료/노쇼 · 날짜 다시 탭=예약</span></div>
-        {items.length===0? <div className="empty" style={{cursor:'pointer'}} onClick={()=>setBooking({date:selKey})}>이날 수업이 없습니다 · 아래 ＋ 버튼으로 예약</div> :
-          items.map(l=>{ const tc=l.trainer?trainerColors[l.trainer]:'var(--line)';
-            return (<button key={l.id} className={'ag-card'+(nextL&&l.id===nextL.id?' next':'')+(l.status!=='예약'?' st-'+l.status:'')}
-              style={{borderLeftColor:tc}} onClick={()=>setSheet(l)}>
-              <div className="ag-time">{hmRange(l)}</div>
-              <div className="ag-body">
-                <b>{l.member_id?memberName(l.member_id)+' · ':''}{l.lesson_name}</b>
-                <span className="muted">{l.trainer||'강사 미지정'}{l.noshow_reason?' · 노쇼: '+l.noshow_reason:''}</span>
+
+        {/* ── 일: 현장용 아젠다 (기존) ── */}
+        {mobView==='day' && <>
+          <div className="ag-week">
+            {weekDates.map((d,i)=>{ const k=ymd(d); const cnt=(byDate[k]||[]).length;
+              return (<button key={i} className={'ag-day'+(k===selKey?' sel':'')+(k===todayKey?' today':'')}
+                  onClick={()=>{ if(k===selKey) setBooking({date:k}); else setAnchor(new Date(d)); }}>
+                <span className="ag-dow">{DOW[i]}</span>
+                <span className="ag-num">{d.getDate()}</span>
+                <span className={'ag-dot'+(cnt?' on':'')}/>
+              </button>); })}
+          </div>
+          <div className="ag-title">{anchor.getMonth()+1}월 {anchor.getDate()}일 ({DOW[anchor.getDay()]}) · 수업 {items.length}건 <span style={{opacity:.6}}>· 카드=완료/노쇼 · 날짜 다시 탭=예약</span></div>
+          {items.length===0? <div className="empty" style={{cursor:'pointer'}} onClick={()=>setBooking({date:selKey})}>이날 수업이 없습니다 · 아래 ＋ 버튼으로 예약</div> :
+            items.map(l=>{ const tc=l.trainer?trainerColors[l.trainer]:'var(--line)';
+              return (<button key={l.id} className={'ag-card'+(nextL&&l.id===nextL.id?' next':'')+(l.status!=='예약'?' st-'+l.status:'')}
+                style={{borderLeftColor:tc}} onClick={()=>setSheet(l)}>
+                <div className="ag-time">{hmRange(l)}</div>
+                <div className="ag-body">
+                  <b>{l.member_id?memberName(l.member_id)+' · ':''}{l.lesson_name}</b>
+                  <span className="muted">{l.trainer||'강사 미지정'}{l.noshow_reason?' · 노쇼: '+l.noshow_reason:''}</span>
+                </div>
+                <span className={'mini '+l.status}>{l.status}</span>
+              </button>); })}
+          {items.length>0 && <button className="ag-add" onClick={()=>setBooking({date:selKey})}>＋ 수업 추가</button>}
+        </>}
+
+        {/* ── 주: 구글 캘린더식 시간 격자 ── */}
+        {mobView==='week' && (()=>{
+          const HOUR=54;                       // 1시간 높이(px)
+          const wk=weekDates.map(d=>(byDate[ymd(d)]||[]));
+          const all=wk.flat();
+          // 보여줄 시간대: 실제 수업 범위에 맞춰 잘라낸다(빈 새벽·심야를 안 그린다)
+          let h0=7,h1=22;
+          if(all.length){
+            const sh=Math.min(...all.map(l=>new Date(l.start_at).getHours()));
+            const eh=Math.max(...all.map(l=>{const e=l.end_at?new Date(l.end_at):new Date(new Date(l.start_at).getTime()+50*60000);
+              return e.getHours()+(e.getMinutes()>0?1:0);}));
+            h0=Math.min(h0,sh); h1=Math.max(h1,eh);
+          }
+          const hours=Array.from({length:Math.max(1,h1-h0)},(_,i)=>h0+i);
+          const H=hours.length*HOUR;
+          // 겹치는 수업은 옆으로 나눠 배치 (강사가 여럿이면 같은 시간에 겹칠 수 있다)
+          const lay=list=>{
+            const evs=list.map(l=>{ const s=new Date(l.start_at);
+              const e=l.end_at?new Date(l.end_at):new Date(s.getTime()+50*60000);
+              return {l,s:s.getHours()*60+s.getMinutes(),e:Math.max(e.getHours()*60+e.getMinutes(),s.getHours()*60+s.getMinutes()+20)};})
+              .sort((a,b)=>a.s-b.s||a.e-b.e);
+            let i=0;
+            while(i<evs.length){                     // 겹침 덩어리 단위로 폭을 나눈다
+              let j=i, end=evs[i].e;
+              while(j+1<evs.length && evs[j+1].s < end){ j++; end=Math.max(end,evs[j].e); }
+              const grp=evs.slice(i,j+1), lanes=[];
+              grp.forEach(ev=>{ let k=0; while(k<lanes.length && lanes[k]>ev.s) k++; ev.lane=k; lanes[k]=ev.e; });
+              grp.forEach(ev=>ev.cols=lanes.length);
+              i=j+1;
+            }
+            return evs;
+          };
+          return (<div className="mw">
+            <div className="mw-head">
+              <div className="mw-gut"/>
+              {weekDates.map((d,i)=>{ const k=ymd(d);
+                return (<button key={i} className={'mw-dh'+(k===todayKey?' today':'')+(i===0?' sun':'')+(i===6?' sat':'')}
+                    onClick={()=>{ setAnchor(new Date(d)); setMobView('day'); }}>
+                  <span>{DOW[i]}</span><b>{d.getDate()}</b>
+                </button>); })}
+            </div>
+            <div className="mw-body">
+              <div className="mw-times" style={{height:H}}>
+                {hours.map(h=><div key={h} className="mw-t" style={{height:HOUR}}>{pad(h)}:00</div>)}
               </div>
-              <span className={'mini '+l.status}>{l.status}</span>
-            </button>); })}
-        {items.length>0 && <button className="ag-add" onClick={()=>setBooking({date:selKey})}>＋ 수업 추가</button>}
+              {weekDates.map((d,di)=>(
+                <div key={di} className={'mw-col'+(ymd(d)===todayKey?' today':'')} style={{height:H,backgroundSize:`100% ${HOUR}px`}}
+                     onClick={()=>setBooking({date:ymd(d)})}>
+                  {lay(wk[di]).map(ev=>{
+                    const top=(ev.s-h0*60)/60*HOUR, hgt=Math.max(16,(ev.e-ev.s)/60*HOUR-2);
+                    // 겹쳐서 칸이 좁아지면(3개 이상) 시간 라벨을 접고 이름만 남긴다 — 13px에 두 줄은 못 읽는다
+                    const narrow=ev.cols>2, short=hgt<30;
+                    return (<button key={ev.l.id} className={'mw-ev'+(narrow?' narrow':'')}
+                      style={{...evStyle(ev.l),top,height:hgt,
+                              left:`calc(${ev.lane/ev.cols*100}% + 1px)`, width:`calc(${100/ev.cols}% - 2px)`}}
+                      title={`${hm(ev.l.start_at)} ${label(ev.l)} · ${ev.l.trainer||''}`}
+                      onClick={e=>{e.stopPropagation(); setSheet(ev.l);}}>
+                      {!narrow && !short && <i>{hm(ev.l.start_at)}</i>}{label(ev.l)}
+                    </button>); })}
+                </div>))}
+            </div>
+            <div className="muted" style={{fontSize:11,padding:'8px 2px 0'}}>블록=수업(색=강사) · 탭하면 처리 · 빈칸 탭=예약 · 요일 탭=그날 보기</div>
+          </div>);
+        })()}
+
+        {/* ── 월: 날짜별 회원명 칩 ── */}
+        {mobView==='month' && (()=>{
+          const first=new Date(anchor.getFullYear(),anchor.getMonth(),1);
+          const gs=new Date(first); gs.setDate(1-first.getDay());
+          const cells=Array.from({length:42},(_,i)=>{ const d=new Date(gs); d.setDate(gs.getDate()+i); return d; });
+          const MAX=2;   // 칸당 보여줄 칩 수 — 넘으면 +N
+          return (<div className="mm">
+            <div className="mm-dow">{DOW.map((d,i)=><span key={i} className={i===0?'sun':i===6?'sat':''}>{d}</span>)}</div>
+            <div className="mm-grid">
+              {cells.map((d,i)=>{ const k=ymd(d);
+                const list=(byDate[k]||[]).slice().sort((a,b)=>a.start_at<b.start_at?-1:1);
+                const inM=d.getMonth()===anchor.getMonth();
+                return (<button key={i} className={'mm-cell'+(inM?'':' other')+(k===todayKey?' today':'')}
+                    onClick={()=>{ setAnchor(new Date(d)); setMobView('day'); }}>
+                  <span className="mm-num">{d.getDate()}</span>
+                  {list.slice(0,MAX).map(l=>(
+                    <i key={l.id} className="mm-ev" style={evStyle(l)}>{label(l)}</i>))}
+                  {list.length>MAX && <em className="mm-more">+{list.length-MAX}</em>}
+                </button>); })}
+            </div>
+            <div className="muted" style={{fontSize:11,padding:'8px 2px 0'}}>색=강사 · 날짜를 탭하면 그날 상세로 갑니다</div>
+          </div>);
+        })()}
       </div>);
     })() : mode==='day' ? (()=>{
       const k=ymd(anchor); const items=(byDate[k]||[]).slice().sort((a,b)=>a.start_at<b.start_at?-1:1);
@@ -2480,7 +2625,7 @@ function LockersView({sb}){
 }
 
 // ---------- 홈 대시보드 ----------
-function DashboardView({sb,onNav}){
+function DashboardView({sb,onNav,onLogout}){
   const {can,role}=usePerm();
   const [members,setMembers]=useState(null);
   const [ms,setMs]=useState([]);
@@ -2820,6 +2965,10 @@ function DashboardView({sb,onNav}){
         </>}
       </div>
     </div>
+    {/* 로그아웃은 화면 맨 아래에 둔다 — 실수로 눌리지 않게(모바일 전용, 데스크탑은 사이드바에 있음) */}
+    {onLogout && <div className="home-logout">
+      <button className="btn ghost" onClick={()=>{ if(confirm('로그아웃할까요?')) onLogout(); }}>로그아웃</button>
+    </div>}
     {sel && <Detail sb={sb} member={sel} onClose={()=>{setSel(null);load();}}/>}
     {taskModal && <TaskModal sb={sb} member={null} onClose={()=>setTaskModal(false)} onSaved={()=>{setTaskModal(false);load();}}/>}
     {taskFor && <TaskModal sb={sb} member={taskFor.member} initTitle={taskFor.initTitle} onClose={()=>setTaskFor(null)} onSaved={()=>{setTaskFor(null);load();}}/>}
@@ -4082,14 +4231,10 @@ function App(){
         </div>
         <button className="btn ghost sm" style={{width:'100%'}} onClick={logout}>로그아웃</button>
       </aside>
-      <button className="mob-logout" onClick={logout} title="로그아웃" aria-label="로그아웃">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round">
-          <path d="M9 21H5.5A2.5 2.5 0 0 1 3 18.5v-13A2.5 2.5 0 0 1 5.5 3H9"/>
-          <path d="M16 17l5-5-5-5M21 12H9"/>
-        </svg>
-      </button>
+      {/* ★모바일 우상단 원형 로그아웃 버튼은 없앴다 — 통합검색 바로 옆이라 실수로 눌러
+          작업 중 로그아웃되는 사고가 났다. 로그아웃은 홈 화면 맨 아래 텍스트 버튼으로 옮겼다. */}
       <main className="main">
-        {shownView==='home'? <DashboardView sb={sb} onNav={setView}/> :
+        {shownView==='home'? <DashboardView sb={sb} onNav={setView} onLogout={logout}/> :
          shownView==='members'? <MembersView sb={sb}/> :
          shownView==='calendar'? <CalendarView sb={sb}/> :
          shownView==='lockers'? <LockersView sb={sb}/> :
