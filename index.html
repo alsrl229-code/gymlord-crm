@@ -522,6 +522,14 @@
     .home-logout{display:block;margin:26px 0 8px;padding-top:18px;border-top:1px solid var(--line)}
     .home-logout .btn{width:100%;padding:13px 0;font-size:15px}
   }
+  /* ★다른 모달 위에서 열리는 창(노쇼 사유·시간수정·삭제)은 z-index를 올린다.
+     .modal-ov가 전부 30이라 DOM에서 뒤에 그려진 '그날 일정' 창이 위를 덮어
+     노쇼 사유 입력칸이 안 보이는 사고가 있었다(2026-08-09). 모바일 액션시트(31)보다도 위여야 한다. */
+  .modal-ov.top{z-index:34}
+  /* 노쇼 이력 표 — 좁은 화면에서도 4열이 읽히게 */
+  .nstable td{vertical-align:top;font-size:13px;padding:8px 6px}
+  .nstable th{white-space:nowrap}
+  @media(max-width:860px){ .nstable td,.nstable th{font-size:12px;padding:7px 4px} }
   /* 그날 일정 창 (모바일 월 보기 → 날짜 탭) */
   .dsm{max-width:440px}
   .dsm-list{max-height:58vh;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
@@ -633,6 +641,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=85"></script>
+<script src="app.bundle.js?v=86"></script>
 </body>
 </html>

@@ -656,6 +656,22 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
   const validCnt=(ms||[]).filter(m=>m.status==='활성'||m.status==='홀딩').length;
   const expiredCnt=(ms||[]).filter(m=>m.status!=='활성'&&m.status!=='홀딩').length;
   const unpaidTotal=(ms||[]).reduce((s,m)=>s+(m.unpaid||0),0);
+  // 노쇼 이력 — 날짜·수업·몇 회차였는지·사유.
+  // ★'회차'는 저장돼 있지 않다. 같은 회원권에 묶인 수업을 시간순으로 세어 순번을 만든다
+  //   (회원권이 연결 안 된 이전분 수업은 순번을 낼 수 없어 '-'로 둔다).
+  const noshows=useMemo(()=>{
+    const all=(ls||[]);
+    const seq={};                                  // lesson.id → 그 회원권에서 몇 번째 수업인지
+    const byMs={};
+    all.forEach(l=>{ if(l.membership_id) (byMs[l.membership_id]=byMs[l.membership_id]||[]).push(l); });
+    Object.values(byMs).forEach(list=>{
+      list.slice().sort((a,b)=>a.start_at<b.start_at?-1:1).forEach((l,i)=>{ seq[l.id]=i+1; });
+    });
+    const msName={}; (ms||[]).forEach(m=>msName[m.id]={name:m.product_name,total:m.total_count});
+    return all.filter(l=>l.status==='노쇼')
+      .sort((a,b)=>a.start_at<b.start_at?1:-1)
+      .map(l=>({...l, seq:seq[l.id]||null, ms:l.membership_id?msName[l.membership_id]:null}));
+  },[ls,ms]);
   return createPortal((<>
     {panel && <div className="mpage-panel-ov" style={{top:panelTop}} onClick={onClose}/>}
     <div className={'mpage'+(panel?' mpage-panel':'')} style={panel?{top:panelTop}:undefined}>
@@ -745,6 +761,23 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
                     <button className="link" style={{margin:0,fontSize:12}} onClick={()=>setEditPay(p)}>수정</button>
                     {p.amount>0 && can('refund')? <button className="link" style={{margin:'0 0 0 8px',fontSize:12}} onClick={()=>setRefund(p)}>환불</button> : null}</td>
                 </tr>))}</tbody></table>}
+          </div>
+          <div className="mp-cardbox">
+            <h3><span>✗ 노쇼 이력</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600,
+              color:noshows.length?'#d98b7a':undefined}}>{ls===null?'':noshows.length+'건'}</span></h3>
+            {ls===null? <div className="muted">불러오는 중...</div> :
+              noshows.length===0? <div className="muted">노쇼 기록이 없습니다.<br/><span style={{fontSize:12}}>(캘린더에서 노쇼 처리하면 날짜·회차·사유가 여기에 쌓입니다)</span></div> :
+              <table className="ptable nstable">
+                <thead><tr><th>날짜</th><th>수업</th><th>회차</th><th>사유</th></tr></thead>
+                <tbody>{noshows.map(l=>(<tr key={l.id}>
+                  <td style={{whiteSpace:'nowrap'}}>{fmtDate(l.start_at)}<br/><span className="muted" style={{fontSize:11}}>{hm(l.start_at)}</span></td>
+                  <td>{l.lesson_name||'수업'}<br/><span className="muted" style={{fontSize:11}}>{l.trainer||'강사 미지정'}</span></td>
+                  <td style={{whiteSpace:'nowrap'}}>{l.seq? <>{l.seq}회차{l.ms&&l.ms.total?<span className="muted">/{l.ms.total}</span>:null}<br/><span className="muted" style={{fontSize:11}}>{l.ms?l.ms.name:''}</span></> : <span className="muted">-</span>}</td>
+                  <td style={{color:l.noshow_reason?'var(--cream)':'var(--muted)'}}>{l.noshow_reason||'사유 없음'}</td>
+                </tr>))}</tbody>
+              </table>}
+            {noshows.length>0 && <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>
+              노쇼는 회차가 차감된 상태로 남습니다. 되돌리려면 캘린더에서 '휴강'으로 바꾸면 +1 복구됩니다.</p>}
           </div>
           <div className="mp-cardbox">
             <h3><span>홀딩 · 연장 · 양도 이력</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>{hist?hist.length+'건':''}</span></h3>
@@ -1884,7 +1917,7 @@ function NoshowModal({lesson,onClose,onConfirm}){
   useEsc(onClose);
   const [reason,setReason]=useState('');
   return (
-    <div className="modal-ov" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}>
+    <div className="modal-ov top" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}>
       <div className="mhead"><h3>노쇼 처리</h3><button className="xbtn" onClick={onClose}>✕</button></div>
       <p className="muted" style={{fontSize:13,marginTop:0}}>{lesson.lesson_name} · {fmtDT(lesson.start_at)} · 차감은 유지됩니다.</p>
       <div className="field"><label>노쇼 사유</label>
@@ -1944,7 +1977,7 @@ function DeleteLessonModal({lesson,memberName,onClose,onConfirm}){
   const [restore,setRestore]=useState(lesson.status!=='휴강');
   const [busy,setBusy]=useState(false);
   const who=lesson.member_id? memberName(lesson.member_id) : null;
-  return (<div className="modal-ov" onClick={onClose}><div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
+  return (<div className="modal-ov top" onClick={onClose}><div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
     <div className="mhead"><h3>수업 삭제</h3><button className="xbtn" onClick={onClose}>✕</button></div>
     <p className="muted" style={{fontSize:13,marginTop:0}}>
       {who?who+' · ':''}{lesson.lesson_name} · {lesson.trainer||'강사 미지정'}<br/>
@@ -2030,7 +2063,7 @@ function EditLessonTimeModal({sb,lesson,memberName,onClose,onSaved}){
     onSaved();
   }
 
-  return (<div className="modal-ov" onClick={onClose}><div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
+  return (<div className="modal-ov top" onClick={onClose}><div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
     <div className="mhead"><h3>수업 시간 수정</h3><button className="xbtn" onClick={onClose}>✕</button></div>
     <p className="muted" style={{fontSize:13,marginTop:0}}>
       {who}{lesson.lesson_name} · {lesson.trainer||'강사 미지정'}<br/>
