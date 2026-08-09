@@ -396,6 +396,12 @@
   .panel label{display:block;font-size:13px;color:var(--muted);margin:12px 0 5px}
   .panel input{width:100%;background:var(--forest);border:1px solid var(--line);border-radius:9px;padding:11px 13px;color:var(--cream);font-size:15px}
   .panel .btn{width:100%;margin-top:18px;padding:12px}
+  /* ★로그인 화면의 체크박스 줄.
+     `.panel label{display:block}`과 `.panel input{width:100%}`이 그대로 먹으면
+     체크박스가 한 줄을 다 차지해 글씨가 아래로 밀린다 → 특이도를 올려 가로 배치로 고정. */
+  .panel label.chk{display:flex;align-items:center;gap:8px;margin:14px 0 4px;
+    font-size:14px;color:var(--cream);cursor:pointer}
+  .panel label.chk input[type=checkbox]{width:17px;height:17px;flex:none;margin:0;accent-color:var(--brass);cursor:pointer}
   .err{color:var(--danger);font-size:13px;margin-top:10px;min-height:18px}
   .link{background:none;border:none;color:var(--brass);font-size:13px;margin-top:14px;text-decoration:underline}
   .empty{padding:50px 20px;text-align:center;color:var(--muted)}
@@ -602,6 +608,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=83"></script>
+<script src="app.bundle.js?v=84"></script>
 </body>
 </html>

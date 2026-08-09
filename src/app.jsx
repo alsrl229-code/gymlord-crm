@@ -269,8 +269,8 @@ function Login({sb,onIn}){
       <input value={email} onChange={e=>setEmail(e.target.value)} onKeyDown={e=>e.key==='Enter'&&go()} />
       <label>비밀번호</label>
       <input type="password" value={pw} onChange={e=>setPw(e.target.value)} onKeyDown={e=>e.key==='Enter'&&go()} />
-      <label className="chk" style={{margin:'12px 0 4px',justifyContent:'flex-start'}}>
-        <input type="checkbox" checked={keep} onChange={e=>setKeep(e.target.checked)}/> 자동 로그인 (다음에 바로 들어가기)
+      <label className="chk">
+        <input type="checkbox" checked={keep} onChange={e=>setKeep(e.target.checked)}/> 자동 로그인
       </label>
       <div className="muted" style={{fontSize:11,margin:'0 0 10px',lineHeight:1.5}}>
         {keep? '이 기기에 로그인 상태가 유지됩니다. 공용 PC에서는 꺼주세요.'
