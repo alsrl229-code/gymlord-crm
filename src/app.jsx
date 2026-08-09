@@ -1868,6 +1868,93 @@ function NoshowModal({lesson,onClose,onConfirm}){
   );
 }
 
+// ---------- 수업 시간 수정 ----------
+// 우클릭 메뉴에서 연다. 날짜·시작시간·길이만 바꾼다.
+// ★회차는 건드리지 않는다 — 차감은 '예약을 만들 때' 이미 끝났고, 시간을 옮기는 건
+//   차감 여부와 무관하다. 여기서 회차를 손대면 이중차감/과복구가 된다.
+function EditLessonTimeModal({sb,lesson,memberName,onClose,onSaved}){
+  useEsc(onClose);
+  const st=new Date(lesson.start_at);
+  const en=lesson.end_at?new Date(lesson.end_at):null;
+  const curDur=en? Math.max(5,Math.round((en-st)/60000)) : 50;
+  const [date,setDate]=useState(ymd(st));
+  const [start,setStart]=useState(`${pad(st.getHours())}:${pad(st.getMinutes())}`);
+  const [dur,setDur]=useState(String(curDur));
+  const [busy,setBusy]=useState(false),[err,setErr]=useState('');
+  const who=lesson.member_id? (memberName(lesson.member_id)+' · ') : '';
+
+  function calc(){
+    const m=String(start||'').match(/^(\d{1,2}):(\d{2})$/);
+    if(!date||!m) return null;
+    const s=new Date(`${date}T${pad(m[1])}:${m[2]}:00+09:00`);
+    if(isNaN(s)) return null;
+    const d=parseInt(dur)||0; if(d<5||d>300) return null;
+    return {s,e:new Date(s.getTime()+d*60000)};
+  }
+  const t=calc();
+  const changed = t && (t.s.getTime()!==st.getTime() || (en? t.e.getTime()!==en.getTime() : true));
+
+  async function save(){
+    const t=calc();
+    if(!t) return setErr('날짜·시작시간·길이(5~300분)를 확인해주세요.');
+    setBusy(true); setErr('');
+    const sIso=t.s.toISOString(), eIso=t.e.toISOString();
+
+    // ① 같은 회원이 그 시각에 이미 다른 수업이 있는지 (자기 자신은 제외)
+    if(lesson.member_id){
+      const {data:mine}=await sb.from('lessons').select('id,start_at,lesson_name,status')
+        .eq('member_id',lesson.member_id).neq('id',lesson.id).neq('status','취소')
+        .gte('start_at',new Date(t.s.getTime()-12*3600000).toISOString())
+        .lte('start_at',new Date(t.s.getTime()+12*3600000).toISOString());
+      const dup=(mine||[]).find(l=>Math.abs(new Date(l.start_at).getTime()-t.s.getTime())<60000);
+      if(dup){ setBusy(false);
+        return setErr(`이 회원은 그 시각에 이미 수업이 있습니다 (${dup.lesson_name||'수업'} · ${dup.status}). 시간을 바꿔주세요.`); }
+    }
+    // ② 같은 강사 시간 겹침 — 막지 않고 물어본다(연강·대타 등 실제로 겹칠 수 있다)
+    if(lesson.trainer){
+      const {data:ex}=await sb.from('lessons').select('id,start_at,end_at,lesson_name')
+        .eq('trainer',lesson.trainer).eq('status','예약').neq('id',lesson.id)
+        .gte('start_at',new Date(t.s.getTime()-12*3600000).toISOString())
+        .lte('start_at',new Date(t.s.getTime()+12*3600000).toISOString());
+      const c=(ex||[]).find(l=> l.start_at < eIso && (l.end_at||l.start_at) > sIso);
+      if(c && !confirm(`⚠️ ${lesson.trainer} 강사가 ${hm(c.start_at)}에 이미 예약이 있습니다 (${c.lesson_name}).\n그래도 이 시간으로 옮길까요?`)){
+        setBusy(false); return; }
+    }
+    const {error}=await sb.from('lessons').update({start_at:sIso,end_at:eIso}).eq('id',lesson.id);
+    setBusy(false);
+    if(error) return setErr('저장 실패: '+error.message);
+    logAct(sb,'수업 시간 변경',`${who}${lesson.lesson_name} · ${fmtDT(lesson.start_at)} → ${fmtDT(sIso)}`);
+    onSaved();
+  }
+
+  return (<div className="modal-ov" onClick={onClose}><div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
+    <div className="mhead"><h3>수업 시간 수정</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+    <p className="muted" style={{fontSize:13,marginTop:0}}>
+      {who}{lesson.lesson_name} · {lesson.trainer||'강사 미지정'}<br/>
+      <span style={{fontSize:12}}>현재: {fmtDT(lesson.start_at)}{en?` ~ ${hm(lesson.end_at)}`:''} ({curDur}분)</span>
+    </p>
+    <div className="field"><label>날짜</label>
+      <input type="date" value={date} onChange={e=>setDate(e.target.value||date)}/></div>
+    <div className="row2">
+      <div className="field" style={{flex:1}}><label>시작 시간</label>
+        <input type="time" value={start} onChange={e=>setStart(e.target.value)}/></div>
+      <div className="field" style={{width:110}}><label>길이(분)</label>
+        <input type="number" value={dur} onChange={e=>setDur(e.target.value)}/></div>
+    </div>
+    <div className="seg" style={{marginBottom:12}}>
+      {[30,50,60,90].map(n=>(
+        <button key={n} type="button" className={String(n)===String(dur)?'on':''} onClick={()=>setDur(String(n))}>{n}분</button>))}
+    </div>
+    {t && <p className="muted" style={{fontSize:12,margin:'-4px 0 10px'}}>
+      바꾼 뒤: <b style={{color:'var(--cream)'}}>{fmtDT(t.s.toISOString())} ~ {hm(t.e.toISOString())}</b>
+    </p>}
+    <p className="muted" style={{fontSize:12,margin:'0 0 12px'}}>시간만 바뀌고 회차·상태는 그대로입니다.</p>
+    {err && <div className="err">{err}</div>}
+    <button className="btn" style={{width:'100%'}} disabled={busy||!t||!changed} onClick={save}>
+      {busy?'저장 중...':changed?'시간 변경':'변경할 내용이 없습니다'}</button>
+  </div></div>);
+}
+
 // ---------- 월 빠른 이동 ----------
 function MonthPicker({cur,onPick}){
   const [y,setY]=useState(cur.getFullYear());
@@ -1889,6 +1976,7 @@ function CalendarView({sb}){
   const [ctx,setCtx]=useState(null);
   const [booking,setBooking]=useState(null);
   const [noshow,setNoshow]=useState(null);
+  const [editTime,setEditTime]=useState(null);   // 우클릭 → 수업 시간 수정
   const [importer,setImporter]=useState(false);
   const [autoMsg,setAutoMsg]=useState('');
   const [picker,setPicker]=useState(false);
@@ -2168,6 +2256,7 @@ function CalendarView({sb}){
       <button onClick={()=>setStatus(ctx.l,'휴강')}>⊘ 수업 휴강 (+1 복구)</button>
       <button onClick={()=>setNoshow(ctx.l)}>✗ 수업 노쇼 (차감 유지)</button>
       {(ctx.l.status!=='예약') && <button onClick={()=>setStatus(ctx.l,'예약')}>↺ 예약으로 되돌리기</button>}
+      <button onClick={()=>{ setEditTime(ctx.l); setCtx(null); }}>🕐 수업 시간 수정</button>
       <button className="danger" onClick={()=>del(ctx.l)}>🗑 수업 삭제</button>
     </CtxMenu>)}
 
@@ -2178,6 +2267,10 @@ function CalendarView({sb}){
     {noshow && <NoshowModal lesson={noshow} onClose={()=>setNoshow(null)} onConfirm={r=>setStatus(noshow,'노쇼',r)}/>}
     {dayView && <DayModal date={dayView.date} items={byDate[dayView.date]||[]} memberName={memberName} chipStyle={chipStyle}
         onClose={()=>setDayView(null)} onCtx={c=>setCtx(c)} onMember={l=>{ setDayView(null); openMemberDetail(l); }}/>}
+    {/* ★DayModal 뒤에 둔다 — 둘 다 .modal-ov(z-index 30)라 나중에 그려진 쪽이 위로 온다.
+        앞에 두면 '그날 전체보기'에서 우클릭해 연 이 창이 뒤에 깔려 안 보인다. */}
+    {editTime && <EditLessonTimeModal sb={sb} lesson={editTime} memberName={memberName}
+        onClose={()=>setEditTime(null)} onSaved={()=>{setEditTime(null);setDayView(null);loadLessons();}}/>}
     {memberDetail && <Detail sb={sb} member={memberDetail.member} panel panelTop={memberDetail.top}
         onClose={()=>{ setMemberDetail(null); loadLessons(); }}/>}
 
@@ -2192,6 +2285,7 @@ function CalendarView({sb}){
         <button onClick={()=>{setStatus(sheet,'휴강');setSheet(null);}}>⊘ 휴강 (+1 복구)</button>
         <button onClick={()=>{setNoshow(sheet);setSheet(null);}}>✗ 노쇼 (차감 유지)</button>
         {sheet.status!=='예약' && <button onClick={()=>{setStatus(sheet,'예약');setSheet(null);}}>↺ 예약으로 되돌리기</button>}
+        <button onClick={()=>{setEditTime(sheet);setSheet(null);}}>🕐 수업 시간 수정</button>
         <button className="danger" onClick={()=>{del(sheet);setSheet(null);}}>🗑 수업 삭제</button>
         <button className="cancel" onClick={()=>setSheet(null)}>닫기</button>
       </div>
