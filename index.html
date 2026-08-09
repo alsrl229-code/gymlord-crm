@@ -522,6 +522,31 @@
     .home-logout{display:block;margin:26px 0 8px;padding-top:18px;border-top:1px solid var(--line)}
     .home-logout .btn{width:100%;padding:13px 0;font-size:15px}
   }
+  /* 그날 일정 창 (모바일 월 보기 → 날짜 탭) */
+  .dsm{max-width:440px}
+  .dsm-list{max-height:58vh;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
+  .dsm-row{display:grid;grid-template-columns:52px 4px 1fr auto;gap:9px;align-items:center;
+    background:var(--forest);border:1px solid var(--line);border-radius:10px;
+    padding:10px 11px;text-align:left;font-family:inherit;cursor:pointer;color:var(--cream)}
+  .dsm-row:active{background:#1a2c26}
+  .dsm-time{font-size:13px;font-weight:800;line-height:1.15;font-variant-numeric:tabular-nums}
+  .dsm-time i{display:block;font-style:normal;font-size:10.5px;color:var(--muted);font-weight:600}
+  .dsm-bar{align-self:stretch;border-radius:3px;min-height:30px}
+  .dsm-body{min-width:0}
+  .dsm-body b{display:block;font-size:15px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dsm-body small{display:block;color:var(--muted);font-size:11.5px;margin-top:2px;
+    overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+  .dsm-row.st-완료{opacity:.72}
+  .dsm-row.st-휴강{opacity:.5}
+  .dsm-row.st-휴강 .dsm-body b{text-decoration:line-through}
+  .dsm-row.st-노쇼 .dsm-body b{text-decoration:line-through;color:#d98b7a}
+  /* 선택지 카드 (삭제 시 회차 처리) */
+  .pickbox{display:flex;gap:10px;align-items:flex-start;padding:11px 12px;margin-bottom:8px;
+    background:var(--forest);border:1px solid var(--line);border-radius:10px;cursor:pointer}
+  .pickbox.on{border-color:var(--brass);background:rgba(176,141,87,.1)}
+  .pickbox input{width:16px;height:16px;flex:none;margin:2px 0 0;accent-color:var(--brass)}
+  .pickbox b{display:block;font-size:14px}
+  .pickbox small{display:block;color:var(--muted);font-size:11.5px;margin-top:2px;line-height:1.45}
   /* ── 모바일 전용 캘린더: 일/주/월 전환 ── */
   .mob-seg{margin:0 0 10px}
   .mob-seg button{padding:9px 0;font-size:14px}
@@ -608,6 +633,6 @@
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=84"></script>
+<script src="app.bundle.js?v=85"></script>
 </body>
 </html>

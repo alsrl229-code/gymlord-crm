@@ -1894,6 +1894,83 @@ function NoshowModal({lesson,onClose,onConfirm}){
   );
 }
 
+// ---------- 그날 일정 (모바일 · 시간축) ----------
+// 월 보기에서 날짜를 누르면 열린다. 그날 수업을 시간 순서대로 한 창에 보여주고
+// 수업을 누르면 시간수정·휴강·노쇼·삭제로 이어진다.
+function DayScheduleModal({date,items,memberName,trainerColors,onPick,onAdd,onClose}){
+  useEsc(onClose);
+  const DOW=['일','월','화','수','목','금','토'];
+  const d=new Date(`${date}T00:00:00+09:00`);
+  const list=items.slice().sort((a,b)=>a.start_at<b.start_at?-1:1);
+  const done=list.filter(l=>l.status==='완료').length;
+  const rest=list.filter(l=>l.status==='휴강').length;
+  const ns=list.filter(l=>l.status==='노쇼').length;
+  const book=list.filter(l=>l.status==='예약').length;
+  return (<div className="modal-ov" onClick={onClose}><div className="modal dsm" onClick={e=>e.stopPropagation()}>
+    <div className="mhead">
+      <h3>{d.getMonth()+1}월 {d.getDate()}일 ({DOW[d.getDay()]}) · 수업 {list.length}건</h3>
+      <button className="xbtn" onClick={onClose}>✕</button>
+    </div>
+    {list.length>0 && <p className="muted" style={{fontSize:12,margin:'0 0 10px'}}>
+      예약 {book} · 완료 {done}{ns?` · 노쇼 ${ns}`:''}{rest?` · 휴강 ${rest}`:''} — 수업을 누르면 시간수정·휴강·노쇼·삭제
+    </p>}
+    {list.length===0
+      ? <div className="empty" style={{padding:'26px 0'}}>이날 수업이 없습니다</div>
+      : <div className="dsm-list">
+          {list.map(l=>{ const tc=l.trainer?trainerColors[l.trainer]:'#3a4b44';
+            return (<button key={l.id} className={'dsm-row st-'+l.status} onClick={()=>onPick(l)}>
+              <span className="dsm-time">{hm(l.start_at)}<i>{l.end_at?hm(l.end_at):''}</i></span>
+              <span className="dsm-bar" style={{background:tc}}/>
+              <span className="dsm-body">
+                <b>{l.member_id?memberName(l.member_id):(l.lesson_name||'수업')}</b>
+                <small>{l.lesson_name} · {l.trainer||'강사 미지정'}{l.noshow_reason?` · 노쇼: ${l.noshow_reason}`:''}</small>
+              </span>
+              <span className={'mini '+l.status}>{l.status}</span>
+            </button>); })}
+        </div>}
+    <button className="btn" style={{width:'100%',marginTop:12}} onClick={onAdd}>＋ 이날 수업 추가</button>
+  </div></div>);
+}
+
+// ---------- 수업 삭제 (회차 처리 선택) ----------
+// ★예전엔 휴강이 아니면 무조건 회차를 +1 복구했다. 그런데 실제로는 두 경우가 다르다.
+//   · 아직 안 한 수업을 지우는 것 → 회차를 돌려줘야 한다
+//   · 이미 한 수업의 기록만 지우는 것 → 회차는 그대로 둬야 한다
+//   자동으로 정할 수 없어서 물어본다.
+function DeleteLessonModal({lesson,memberName,onClose,onConfirm}){
+  useEsc(onClose);
+  const hasMs=!!lesson.membership_id;
+  // 휴강은 이미 복구된 상태 → 기본은 '유지'. 그 외는 예전 동작대로 '복구'.
+  const [restore,setRestore]=useState(lesson.status!=='휴강');
+  const [busy,setBusy]=useState(false);
+  const who=lesson.member_id? memberName(lesson.member_id) : null;
+  return (<div className="modal-ov" onClick={onClose}><div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
+    <div className="mhead"><h3>수업 삭제</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+    <p className="muted" style={{fontSize:13,marginTop:0}}>
+      {who?who+' · ':''}{lesson.lesson_name} · {lesson.trainer||'강사 미지정'}<br/>
+      <span style={{fontSize:12}}>{fmtDT(lesson.start_at)} · 현재 {lesson.status}</span>
+    </p>
+    {hasMs? <>
+      <div className="field"><label>회차를 어떻게 할까요?</label></div>
+      <label className={'pickbox'+(restore?' on':'')} onClick={()=>setRestore(true)}>
+        <input type="radio" checked={restore} readOnly/>
+        <span><b>회차 돌려주기 (+1)</b><small>수업을 안 한 것으로 처리합니다. 잘못 넣었거나 취소된 수업.</small></span>
+      </label>
+      <label className={'pickbox'+(!restore?' on':'')} onClick={()=>setRestore(false)}>
+        <input type="radio" checked={!restore} readOnly/>
+        <span><b>회차 그대로 두기</b><small>수업은 진행됐고 기록만 지웁니다. 잔여 회차가 바뀌지 않습니다.</small></span>
+      </label>
+    </> : <p className="muted" style={{fontSize:12}}>이 수업은 회원권에 연결돼 있지 않아 회차 변동이 없습니다.</p>}
+    <p className="muted" style={{fontSize:12,margin:'12px 0'}}>삭제하면 되돌릴 수 없습니다.</p>
+    <div style={{display:'flex',gap:8}}>
+      <button className="btn ghost" style={{flex:1}} onClick={onClose}>취소</button>
+      <button className="btn" style={{flex:1,background:'#8c3b2c',color:'#fff',boxShadow:'none'}}
+        disabled={busy} onClick={()=>{setBusy(true);onConfirm(hasMs?restore:false);}}>
+        {busy?'삭제 중...':'삭제'}</button>
+    </div>
+  </div></div>);
+}
+
 // ---------- 수업 시간 수정 ----------
 // 우클릭 메뉴에서 연다. 날짜·시작시간·길이만 바꾼다.
 // ★회차는 건드리지 않는다 — 차감은 '예약을 만들 때' 이미 끝났고, 시간을 옮기는 건
@@ -2003,6 +2080,8 @@ function CalendarView({sb}){
   const [booking,setBooking]=useState(null);
   const [noshow,setNoshow]=useState(null);
   const [editTime,setEditTime]=useState(null);   // 우클릭 → 수업 시간 수정
+  const [delTarget,setDelTarget]=useState(null); // 삭제 시 회차 처리를 물어볼 대상
+  const [daySheet,setDaySheet]=useState(null);   // 모바일 월 보기에서 날짜를 눌렀을 때 (YYYY-MM-DD)
   const [importer,setImporter]=useState(false);
   const [autoMsg,setAutoMsg]=useState('');
   const [picker,setPicker]=useState(false);
@@ -2112,17 +2191,19 @@ function CalendarView({sb}){
     logAct(sb,'수업 '+to,`${l.member_id?memberName(l.member_id)+' · ':''}${l.lesson_name} · ${fmtDT(l.start_at)}${to==='노쇼'&&reason?` (사유: ${reason})`:''}`);
     setCtx(null); setNoshow(null); loadLessons();
   }
+  // 삭제는 회차 처리를 물어본 뒤 실행한다 (DeleteLessonModal)
+  function del(l){ setDelTarget(l); setCtx(null); }
   // ★삭제를 먼저 하고 회차를 복구한다. 반대로 하면 삭제가 실패했을 때 회차만 늘어난다.
-  async function del(l){
-    if(!confirm('이 수업을 삭제할까요?')) return;
+  async function doDelete(l,restore){
     const {error}=await sb.from('lessons').delete().eq('id',l.id);
-    if(error){ alert('수업 삭제에 실패했습니다.\n'+error.message); setCtx(null); return; }
-    if(l.status!=='휴강' && l.membership_id){
+    if(error){ alert('수업 삭제에 실패했습니다.\n'+error.message); setDelTarget(null); return; }
+    if(restore && l.membership_id){
       const {error:rErr}=await sb.rpc('restore_session',{p_membership_id:l.membership_id});
       if(rErr) alert(`수업은 삭제됐지만 회차 복구에 실패했습니다.\n${rErr.message}\n\n회원 상세 → 회원권 수정에서 잔여 회차를 직접 +1 해주세요.`);
     }
-    logAct(sb,'수업 삭제',`${l.member_id?memberName(l.member_id)+' · ':''}${l.lesson_name} · ${fmtDT(l.start_at)}`);
-    setCtx(null); loadLessons();
+    logAct(sb,'수업 삭제',`${l.member_id?memberName(l.member_id)+' · ':''}${l.lesson_name} · ${fmtDT(l.start_at)}`
+      +(l.membership_id? (restore?' (회차 복구)':' (회차 유지)') : ''));
+    setDelTarget(null); loadLessons();
   }
   // 수업 칩 좌클릭 → 회원 상세(요일 헤더 아래 패널). 우클릭은 상태메뉴 유지.
   async function openMemberDetail(l,e){
@@ -2330,14 +2411,14 @@ function CalendarView({sb}){
                 const list=(byDate[k]||[]).slice().sort((a,b)=>a.start_at<b.start_at?-1:1);
                 const inM=d.getMonth()===anchor.getMonth();
                 return (<button key={i} className={'mm-cell'+(inM?'':' other')+(k===todayKey?' today':'')}
-                    onClick={()=>{ setAnchor(new Date(d)); setMobView('day'); }}>
+                    onClick={()=>setDaySheet(k)}>
                   <span className="mm-num">{d.getDate()}</span>
                   {list.slice(0,MAX).map(l=>(
                     <i key={l.id} className="mm-ev" style={evStyle(l)}>{label(l)}</i>))}
                   {list.length>MAX && <em className="mm-more">+{list.length-MAX}</em>}
                 </button>); })}
             </div>
-            <div className="muted" style={{fontSize:11,padding:'8px 2px 0'}}>색=강사 · 날짜를 탭하면 그날 상세로 갑니다</div>
+            <div className="muted" style={{fontSize:11,padding:'8px 2px 0'}}>색=강사 · 날짜를 탭하면 그날 일정이 열립니다</div>
           </div>);
         })()}
       </div>);
@@ -2414,8 +2495,14 @@ function CalendarView({sb}){
         onClose={()=>setDayView(null)} onCtx={c=>setCtx(c)} onMember={l=>{ setDayView(null); openMemberDetail(l); }}/>}
     {/* ★DayModal 뒤에 둔다 — 둘 다 .modal-ov(z-index 30)라 나중에 그려진 쪽이 위로 온다.
         앞에 두면 '그날 전체보기'에서 우클릭해 연 이 창이 뒤에 깔려 안 보인다. */}
+    {/* 모바일 월 보기에서 날짜를 누르면 여는 '그날 일정' 창 (시간축) */}
+    {isMobile && daySheet && <DayScheduleModal date={daySheet}
+        items={byDate[daySheet]||[]} memberName={memberName} trainerColors={trainerColors}
+        onPick={l=>setSheet(l)} onAdd={()=>setBooking({date:daySheet})} onClose={()=>setDaySheet(null)}/>}
     {editTime && <EditLessonTimeModal sb={sb} lesson={editTime} memberName={memberName}
         onClose={()=>setEditTime(null)} onSaved={()=>{setEditTime(null);setDayView(null);loadLessons();}}/>}
+    {delTarget && <DeleteLessonModal lesson={delTarget} memberName={memberName}
+        onClose={()=>setDelTarget(null)} onConfirm={r=>doDelete(delTarget,r)}/>}
     {memberDetail && <Detail sb={sb} member={memberDetail.member} panel panelTop={memberDetail.top}
         onClose={()=>{ setMemberDetail(null); loadLessons(); }}/>}
 
