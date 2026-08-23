@@ -579,6 +579,7 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
   const [trainerOpts,setTrainerOpts]=useState([]);
   const [ms,setMs]=useState(null),[ls,setLs]=useState(null),[pays,setPays]=useState(null),[myLockers,setMyLockers]=useState([]);
   const [reg,setReg]=useState(false),[editMs,setEditMs]=useState(null),[editMember,setEditMember]=useState(false);
+  const [msDetail,setMsDetail]=useState(null);   // 회원권 카드 클릭 → 레슨 이력 상세
   const [lessonTab,setLessonTab]=useState('upcoming');
   const [showHistory,setShowHistory]=useState(false),[lockerPick,setLockerPick]=useState(false),[collect,setCollect]=useState(false);
   const [refund,setRefund]=useState(null);
@@ -639,6 +640,24 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
     try{ await navigator.clipboard.writeText(link); alert('서명 링크가 복사되었습니다.\n회원 기기(태블릿·폰) 브라우저에 붙여넣어 열면 서명 페이지가 나옵니다.\n링크는 1회용이며 서명 후 자동 만료됩니다.'); }
     catch(e){ prompt('아래 링크를 복사해 회원 기기에서 열어주세요 (1회용)', link); }
   }
+  // 회원 조회 링크(영구 토큰): 회원이 로그인 없이 잔여 회차·다음 수업을 확인한다.
+  // ★동의 링크와 달리 1회용이 아니다 — 재방문이 목적이라 매번 새로 주면 쓸모가 없다.
+  //   분실·유출 시엔 [재발급]으로 새 토큰을 덮어써 이전 링크를 즉시 무효화한다.
+  async function makeViewLink(regen){
+    let token=member.view_token;
+    if(!token || regen){
+      token=crypto.randomUUID();
+      const {error}=await sb.from('members').update({view_token:token}).eq('id',member.id);
+      if(error) return alert('링크 생성 실패: '+error.message+(/view_token|schema cache/i.test(error.message)?'\n(db/member_view_20260821.sql 실행이 필요합니다)':''));
+      logAct(sb,regen?'조회링크 재발급':'조회링크 생성',member.name);
+      setMember(m=>({...m,view_token:token}));
+    }
+    const cfg=btoa((localStorage.getItem(LS.url)||'')+'|'+(localStorage.getItem(LS.key)||''));
+    const link=`${location.origin}${location.pathname}#v=${token}&cfg=${cfg}`;
+    const msg=(regen?'링크를 재발급했습니다. 이전 링크는 즉시 무효화됩니다.\n\n':'')+'조회 링크가 복사되었습니다.\n회원에게 전달하면 로그인 없이 잔여 회차와 다음 수업을 확인할 수 있습니다.';
+    try{ await navigator.clipboard.writeText(link); alert(msg); }
+    catch(e){ prompt('아래 링크를 회원에게 전달해주세요', link); }
+  }
   useEffect(()=>{ reload(); },[member.id]);
   useEffect(()=>{ if(role!=='master') return;
     sb.from('memberships').select('trainer').not('trainer','is',null).limit(5000).then(({data})=>{
@@ -661,12 +680,7 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
   //   (회원권이 연결 안 된 이전분 수업은 순번을 낼 수 없어 '-'로 둔다).
   const noshows=useMemo(()=>{
     const all=(ls||[]);
-    const seq={};                                  // lesson.id → 그 회원권에서 몇 번째 수업인지
-    const byMs={};
-    all.forEach(l=>{ if(l.membership_id) (byMs[l.membership_id]=byMs[l.membership_id]||[]).push(l); });
-    Object.values(byMs).forEach(list=>{
-      list.slice().sort((a,b)=>a.start_at<b.start_at?-1:1).forEach((l,i)=>{ seq[l.id]=i+1; });
-    });
+    const seq=seqByMembership(all);                // 회원권 상세와 같은 규칙(휴강 제외)을 쓴다
     const msName={}; (ms||[]).forEach(m=>msName[m.id]={name:m.product_name,total:m.total_count});
     return all.filter(l=>l.status==='노쇼')
       .sort((a,b)=>a.start_at<b.start_at?1:-1)
@@ -711,6 +725,11 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
                 ? <b style={{color:'#7dc4a0'}}>동의 · {fmtDate(member.consent_at)}{member.consent_marketing?' · 마케팅':''}</b>
                 : <b style={{color:'#d98b7a'}}>미확보 {can('members') && <button className="link" style={{margin:'0 0 0 4px',fontSize:12}} title="회원 기기에서 로그인 없이 서명받는 1회용 링크" onClick={makeConsentLink}>서명 링크</button>}</b>}
             </div>
+            <div className="kv"><span>조회 링크</span>
+              <b>{can('members')
+                  ? <><button className="link" style={{fontSize:12}} title="회원이 로그인 없이 잔여 회차·다음 수업을 확인하는 링크" onClick={()=>makeViewLink(false)}>{member.view_token?'링크 복사':'링크 만들기'}</button>
+                      {member.view_token && <button className="link" style={{fontSize:12,marginLeft:10,opacity:.7}} title="이전 링크를 무효화하고 새 링크를 만듭니다" onClick={()=>{ if(confirm('이전 링크가 즉시 무효화됩니다.\n재발급할까요?')) makeViewLink(true); }}>재발급</button>}</>
+                  : '-'}</b></div>
             {member.tags && <div className="kv"><span>태그</span>
               <b>{member.tags.split(',').map(s=>s.trim()).filter(Boolean).map(t=><span key={t} className="tagchip">{t}</span>)}</b></div>}
             <div className="kv"><span>락커</span>
@@ -726,7 +745,7 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
             {ms===null? <div className="muted">불러오는 중...</div> :
               ms.length===0? <div className="muted">보유 회원권이 없습니다</div> :
               ms.map(m=>{ const t=m.total_count||0,r=m.remaining_count||0,used=Math.max(0,t-r); const d=dday(m.end_date);
-                return (<div className="ms-row" key={m.id} onClick={()=>setEditMs(m)} title="클릭 시 수정">
+                return (<div className="ms-row" key={m.id} onClick={()=>setMsDetail(m)} title="클릭 시 레슨 이력·소진 현황">
                   <div className="kv"><b>{m.product_name} <span className={'badge b-'+(m.status||'')}>{m.status||'-'}</span></b>
                     {d!=null && <span className={'dday'+(d<0?' expired':'')}>{d<0?'만료':d===0?'오늘 만료':`${d}일 남음`}</span>}</div>
                   <div className="kv" style={{marginTop:2}}><span>{fmtDate(m.start_date)} ~ {fmtDate(m.end_date)}</span><b>{r} / {t} <span className="muted">(사용 {used})</span></b></div>
@@ -744,7 +763,8 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
               lessonList.length===0? <div className="muted">{lessonTab==='upcoming'?'예정된 예약이 없습니다':'지난 수업 기록이 없습니다'}</div> :
               lessonList.slice(0,8).map(l=>(<div className="card" key={l.id} style={{padding:'9px 14px'}}>
                 <div className="kv"><b>{l.lesson_name||'수업'} <span className={'mini '+l.status}>{l.status}</span></b><span>{fmtDT(l.start_at)}</span></div>
-                <div className="kv"><span>{l.trainer||'-'}</span><span>{l.noshow_reason?('노쇼: '+l.noshow_reason):(l.price?l.price.toLocaleString()+'원':'')}</span></div>
+                <div className="kv"><span>{l.trainer||'-'}{(()=>{ const mm=(ms||[]).find(x=>String(x.id)===String(l.membership_id));
+                  return mm? <span className="muted"> · {mm.product_name}</span> : (!l.membership_id? <span className="muted"> · 회원권 미지정</span> : null); })()}</span><span>{l.noshow_reason?('노쇼: '+l.noshow_reason):(l.price?l.price.toLocaleString()+'원':'')}</span></div>
               </div>))}
             {ls && lessonList.length>8 && <button className="link" style={{marginTop:4}} onClick={()=>setShowHistory(true)}>+ {lessonList.length-8}건 더보기</button>}
           </div>
@@ -816,6 +836,8 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
       </div>
     </div>
     {reg && <RegisterModal sb={sb} member={member} onClose={()=>setReg(false)} onSaved={()=>{setReg(false);reload();reloadMember();}}/>}
+    {msDetail && <MembershipDetailModal ms={msDetail} memberName={member.name} lessons={ls||[]}
+        onEdit={()=>{ setEditMs(msDetail); setMsDetail(null); }} onClose={()=>setMsDetail(null)}/>}
     {editMs && <EditMembershipModal sb={sb} ms={editMs} memberName={member.name} onClose={()=>setEditMs(null)} onSaved={()=>{setEditMs(null);reload();}}/>}
     {editMember && <EditMemberModal sb={sb} member={member} onClose={()=>setEditMember(false)} onSaved={()=>{setEditMember(false);reloadMember();}}/>}
     {showHistory && <LessonHistoryModal member={member} lessons={ls||[]} memberships={ms||[]} initialTab={lessonTab} onClose={()=>setShowHistory(false)}/>}
@@ -1037,6 +1059,19 @@ function LockerPickModal({sb,member,onClose,onSaved}){
   );
 }
 
+// 회차 순번 — 같은 회원권에 묶인 수업을 시간순으로 센다. lesson.id → 몇 회차인지.
+// ★'휴강'은 회차를 소비하지 않는다(CalendarView setStatus의 wasC/willC 규칙과 동일)
+//   → 순번에서 제외한다. 넣으면 실제 차감 횟수와 어긋난 회차가 표시된다.
+// ★회원권이 연결 안 된 이전 이관분은 순번을 낼 수 없다(seq에 없음 → 호출부에서 '—' 처리).
+function seqByMembership(lessons){
+  const seq={}, byMs={};
+  (lessons||[]).forEach(l=>{ if(l.membership_id && l.status!=='휴강') (byMs[l.membership_id]=byMs[l.membership_id]||[]).push(l); });
+  Object.values(byMs).forEach(list=>{
+    list.slice().sort((a,b)=>a.start_at<b.start_at?-1:1).forEach((l,i)=>{ seq[l.id]=i+1; });
+  });
+  return seq;
+}
+
 // ---------- 예약 내역 전체보기 (큰 팝업) ----------
 function LessonHistoryModal({member,lessons,memberships,initialTab,onClose}){
   useEsc(onClose);
@@ -1075,6 +1110,65 @@ function LessonHistoryModal({member,lessons,memberships,initialTab,onClose}){
             <div className="kv"><span>{l.trainer||'-'}{msName(l.membership_id)?<span className="muted"> · {msName(l.membership_id)}</span>:(!l.membership_id?<span className="muted"> · 회원권 미지정</span>:'')}</span><span>{l.noshow_reason?('노쇼: '+l.noshow_reason):(l.price?l.price.toLocaleString()+'원':'')}</span></div>
           </div>))}
       </div>
+    </div></div>
+  );
+}
+
+// ---------- 회원권 상세 (그 회원권으로 진행한 레슨 이력) ----------
+// 회원권 카드를 누르면 열린다. "몇 회차까지 진행했고 언제 했는지"가 주 용도라
+// 수정은 하단 버튼으로 한 단계 뒤로 뺐다(확인이 잦고 수정은 드물다).
+function MembershipDetailModal({ms,memberName,lessons,onEdit,onClose}){
+  useEsc(onClose);
+  const mine=useMemo(()=>(lessons||[]).filter(l=>String(l.membership_id)===String(ms.id)),[lessons,ms.id]);
+  const seq=useMemo(()=>seqByMembership(mine),[mine]);
+  const nowISO=new Date().toISOString();
+  const done=mine.filter(l=>l.status==='완료').length;
+  const ns=mine.filter(l=>l.status==='노쇼').length;
+  const rest=mine.filter(l=>l.status==='휴강').length;
+  const bookedAll=mine.filter(l=>l.status==='예약').length;              // 예약은 미래·과거 모두 이미 차감된 상태
+  const bookedFuture=mine.filter(l=>l.status==='예약'&&l.start_at>=nowISO).length;
+  const t=ms.total_count||0, r=ms.remaining_count||0;
+  // ★총 소진(t-r)과 '수업 기록으로 확인되는 소진'의 차이 = 회원권이 연결 안 된 이관분.
+  //   억지로 맞추지 않고 그대로 드러낸다 — 숨기면 나중에 더 헷갈린다.
+  const gap=Math.max(0,(t-r)-(done+ns+bookedAll));
+  const list=mine.slice().sort((a,b)=>a.start_at<b.start_at?1:-1);       // 최신순
+  const when=(iso)=>{ const d=new Date(iso); return isNaN(d)?'-':`${d.getMonth()+1}/${d.getDate()} (${DOW_LABEL[d.getDay()]}) ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const chip={fontSize:12,color:'var(--muted)'};
+  return (
+    <div className="modal-ov" onClick={onClose}><div className="modal" style={{maxWidth:620}} onClick={e=>e.stopPropagation()}>
+      <div className="mhead"><h3>{ms.product_name} <span className={'badge b-'+(ms.status||'')}>{ms.status||'-'}</span>
+        <span className="muted" style={{fontWeight:400,fontSize:14}}> · {memberName}</span></h3>
+        <button className="xbtn" onClick={onClose}>✕</button></div>
+
+      <div className="card" style={{padding:'12px 14px',marginBottom:12}}>
+        <div className="kv"><span>{fmtDate(ms.start_date)} ~ {fmtDate(ms.end_date)}{ms.trainer?` · ${ms.trainer}`:''}</span>
+          <b style={{fontSize:16}}>{r} / {t}</b></div>
+        <div className="gauge" style={{marginTop:6}}><i style={{width:(t?Math.round(r/t*100):0)+'%'}}/></div>
+        <div style={{...chip,marginTop:8,display:'flex',flexWrap:'wrap',gap:'2px 12px'}}>
+          <span>완료 <b>{done}</b></span>
+          {ns>0 && <span>노쇼 <b>{ns}</b></span>}
+          {bookedFuture>0 && <span>예정 예약 <b>{bookedFuture}</b></span>}
+          {rest>0 && <span>휴강 <b>{rest}</b> <span style={{opacity:.7}}>(차감 안 됨)</span></span>}
+          {gap>0 && <span style={{color:'#d98b7a'}}>기록 없는 소진 <b>{gap}</b></span>}
+          <span style={{color:'var(--brass)'}}>앞으로 예약 가능 <b>{r}</b></span>
+        </div>
+        {gap>0 && <div className="muted" style={{fontSize:11.5,marginTop:6,lineHeight:1.6}}>
+          ※ 소진 {t-r}회 중 {gap}회는 수업 기록에 이 회원권이 연결돼 있지 않습니다(이관분 등). 잔여 회차는 정상입니다.</div>}
+      </div>
+
+      <h3 style={{fontSize:12,letterSpacing:1,margin:'0 0 6px',color:'var(--muted)'}}>이 회원권으로 진행한 레슨 ({mine.length}건)</h3>
+      {mine.length===0
+        ? <div className="muted" style={{fontSize:13,padding:'10px 0'}}>이 회원권에 연결된 수업 기록이 없습니다.<br/>
+            <span style={{fontSize:12}}>커트오버·델타로 이전한 수업은 이중차감을 막기 위해 회원권을 비워 둡니다.</span></div>
+        : <div style={{maxHeight:'46vh',overflowY:'auto'}}>{list.map(l=>(
+            <div className="card" key={l.id} style={{padding:'9px 14px'}}>
+              <div className="kv"><b><span className="muted" style={{fontSize:12,marginRight:8}}>{seq[l.id]?seq[l.id]+'회차':'—'}</span>
+                {l.lesson_name||'수업'} <span className={'mini '+l.status}>{l.status}</span></b><span>{when(l.start_at)}</span></div>
+              <div className="kv"><span>{l.trainer||'-'}</span>
+                <span>{l.noshow_reason?('노쇼: '+l.noshow_reason):(l.price?l.price.toLocaleString()+'원':'')}</span></div>
+            </div>))}</div>}
+
+      <button className="btn ghost" style={{width:'100%',marginTop:12}} onClick={onEdit}>회원권 수정</button>
     </div></div>
   );
 }
@@ -4187,6 +4281,63 @@ function ConsentSignPage({token}){
   );
 }
 
+// ---------- 회원 조회 페이지 (#v=토큰) ----------
+// 회원이 로그인 없이 자기 잔여 회차·다음 수업만 확인한다. 로그인 게이트 앞에서 분기한다.
+// ★토큰을 쿼리스트링(?)이 아니라 해시(#)에 두는 이유: 해시는 브라우저 밖으로 나가지 않는다
+//   — Referer 헤더에도, 중간 프록시·CDN 접근로그에도 안 남는다.
+//   동의 링크(1회용)와 달리 이건 **영구 토큰**이라 이 차이가 중요하다.
+function MemberViewPage({token}){
+  const [sb]=useState(()=>{
+    const c=getClient(); if(c) return c;
+    // 회원 기기엔 접속정보가 없다 → 링크의 #cfg에 실어 보낸 값으로 클라이언트를 만든다
+    // (publishable key는 공개값이라 무해. 동의 링크와 같은 방식)
+    try{ const m=(location.hash||'').match(/cfg=([A-Za-z0-9+/=]+)/); if(m){ const [u,k]=atob(m[1]).split('|'); if(/^https?:\/\//i.test(u)&&k) return createClient(u,k); } }catch(e){}
+    return null;
+  });
+  const [info,setInfo]=useState(null);  // null=로딩, 'bad'=무효, {masked_name,memberships,upcoming,last_end}
+  useEffect(()=>{ if(!sb){ setInfo('bad'); return; }
+    sb.rpc('member_view_info',{p_token:token}).then(({data,error})=>{
+      setInfo(error||!data? 'bad' : data);
+    }).catch(()=>setInfo('bad'));
+  },[]);
+  const when=(iso)=>{ const d=new Date(iso); return isNaN(d)?'-':`${d.getMonth()+1}/${d.getDate()} (${DOW_LABEL[d.getDay()]}) ${pad(d.getHours())}:${pad(d.getMinutes())}`; };
+  const card={background:'var(--forest)',border:'1px solid var(--line)',borderRadius:12,padding:'14px 16px',marginTop:10,textAlign:'left'};
+  return (
+    <div className="center gl-scene"><GLMonogram size={520} opacity={.05} color="#B08D57"/><div className="panel gl-panel" style={{maxWidth:420}}>
+      <div className="gl-crest"><GLMonogram size={54} stroke={1.2} opacity={.9}/></div>
+      <div className="logo gl-logo-center">GYMLORD<small>회원 조회</small></div>
+      <Ornament/>
+      {info===null? <div className="muted" style={{padding:'30px 0',textAlign:'center'}}>불러오는 중...</div> :
+       info==='bad'? <div className="muted" style={{padding:'26px 0',textAlign:'center'}}>유효하지 않은 링크입니다.<br/>링크가 재발급됐거나 잘못된 주소입니다.<br/>센터에 새 링크를 요청해주세요.</div> :
+       <>
+        <p style={{fontSize:15,margin:'6px 0 2px',textAlign:'center'}}><b>{info.masked_name}</b> 회원님</p>
+        {(info.memberships||[]).length===0
+          ? <div style={{...card,textAlign:'center'}}>
+              <div className="muted" style={{fontSize:13}}>현재 유효한 회원권이 없습니다</div>
+              {info.last_end && <div className="muted" style={{fontSize:12,marginTop:6}}>마지막 만료 {fmtDate(info.last_end)}</div>}
+            </div>
+          : info.memberships.map((s,i)=>(
+              <div key={i} style={card}>
+                <div style={{fontSize:13,color:'var(--muted)'}}>{s.product}</div>
+                <div style={{fontSize:30,fontWeight:700,letterSpacing:-.5,margin:'4px 0 2px'}}>
+                  {s.remaining}<span style={{fontSize:15,fontWeight:600,color:'var(--muted)'}}> / {s.total} 회</span></div>
+                <div className="muted" style={{fontSize:12.5}}>
+                  {s.end_date? `${fmtDate(s.end_date)}까지` : '만료일 없음'}{s.trainer? ` · ${s.trainer}` : ''}</div>
+              </div>))}
+        <h3 style={{fontSize:12,letterSpacing:1,margin:'18px 0 2px',color:'var(--muted)',textAlign:'left'}}>다음 수업</h3>
+        {(info.upcoming||[]).length===0
+          ? <div className="muted" style={{fontSize:13,padding:'8px 0',textAlign:'left'}}>예정된 수업이 없습니다</div>
+          : <div style={{textAlign:'left'}}>{info.upcoming.map((l,i)=>(
+              <div key={i} style={{display:'flex',justifyContent:'space-between',gap:10,padding:'9px 2px',borderBottom:'1px solid var(--line)',fontSize:13.5}}>
+                <b>{when(l.start_at)}</b><span className="muted">{l.trainer||''}</span>
+              </div>))}</div>}
+        <div className="muted" style={{fontSize:11.5,marginTop:18,lineHeight:1.6}}>
+          실시간 정보입니다. 예약 변경은 담당 선생님께 문의해주세요.</div>
+       </>}
+    </div></div>
+  );
+}
+
 // ---------- 통합 검색 (사이드바) ----------
 function GlobalSearch({sb,onPick}){
   const [q,setQ]=useState('');
@@ -4308,6 +4459,9 @@ function App(){
   // 동의서 서명 링크(?consent=토큰)로 진입 시: 로그인 게이트 앞에서 서명 페이지 표시
   const consentTok=new URLSearchParams(location.search).get('consent');
   if(consentTok) return <ConsentSignPage token={consentTok}/>;
+  // 회원 조회 링크(#v=토큰)로 진입 시: 로그인 게이트 앞에서 조회 페이지 표시
+  const viewTok=((location.hash||'').match(/[#&]v=([0-9a-fA-F-]{36})/)||[])[1];
+  if(viewTok) return <MemberViewPage token={viewTok}/>;
   if(!sb) return <Setup onDone={()=>location.reload()}/>;
   if(authed===null) return <div className="center"><div className="muted">불러오는 중...</div></div>;
   if(!authed) return <Login sb={sb} onIn={()=>setAuthed(true)}/>;
