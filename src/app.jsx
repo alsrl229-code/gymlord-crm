@@ -2242,8 +2242,10 @@ function CalendarView({sb}){
     setLessons(data||[]);
   }
   useEffect(()=>{ (async()=>{
-    const {data:n}=await sb.rpc('auto_complete_overdue');
-    if(n>0) setAutoMsg(`지난 예약 ${n}건을 자동 완료 처리했습니다.`);
+    const {data:n,error:acErr}=await sb.rpc('auto_complete_overdue');
+    // ★예전엔 error를 아예 안 봤다 → 실패하면 회차가 안 깎인 채 조용히 넘어갔다.
+    if(acErr) setAutoMsg(`⚠️ 지난 예약 자동 완료에 실패했습니다 (${acErr.message}). 회차가 안 깎였을 수 있습니다.`);
+    else if(n>0) setAutoMsg(`지난 예약 ${n}건을 자동 완료 처리했습니다.`);
     loadLessons();
   })(); },[cur,mode,anchor,isMobile,mobView]);
   useEffect(()=>{
@@ -2840,7 +2842,7 @@ function LockersView({sb}){
 
 // ---------- 홈 대시보드 ----------
 function DashboardView({sb,onNav,onLogout}){
-  const {can,role}=usePerm();
+  const {can,role,name:meName}=usePerm();
   const [members,setMembers]=useState(null);
   const [ms,setMs]=useState([]);
   const [sel,setSel]=useState(null);
@@ -2850,17 +2852,21 @@ function DashboardView({sb,onNav,onLogout}){
   const [taskModal,setTaskModal]=useState(false);
   const [taskFor,setTaskFor]=useState(null); // {member, initTitle} — 위젯 행에서 만든 회원 할일
   const [loadErr,setLoadErr]=useState('');
+  const [maintErr,setMaintErr]=useState([]);   // 자동 정비(만료·자동완료) 실패 목록
   async function load(){
-    try{ await sb.rpc('expire_overdue'); }catch(e){}
-    // 지난 예약 자동완료 + 회차차감. 캘린더 탭에서만 돌던 것을 홈에서도 돌린다.
-    // (캘린더를 안 열면 수업이 끝나도 '예약'으로 남아 회차가 안 깎이고,
-    //  그 결과 잔여회차가 실제보다 많게 보여 재등록 대상 추출이 늦어졌다)
-    try{ await sb.rpc('auto_complete_overdue'); }catch(e){}
+    // ★이 둘이 조용히 실패하면 잔여 회차가 실제보다 많게 남고 만료 회원권이 활성으로 남는다.
+    //   예전엔 빈 catch로 삼켜서 깨져도 알 방법이 없었다 → 실패를 모아 홈 배너로 알린다.
+    const maint=[];
+    try{ const {error}=await sb.rpc('expire_overdue'); if(error) maint.push('회원권 자동 만료: '+error.message); }
+    catch(e){ maint.push('회원권 자동 만료: '+((e&&e.message)||e)); }
+    try{ const {error}=await sb.rpc('auto_complete_overdue'); if(error) maint.push('지난 예약 자동 완료: '+error.message); }
+    catch(e){ maint.push('지난 예약 자동 완료: '+((e&&e.message)||e)); }
+    setMaintErr(maint);
     const cut=new Date(Date.now()-42*86400000).toISOString();
     const [a,b,c,d,e]=await Promise.all([
       fetchAll(()=>sb.from('members').select('*').order('name').order('id')),
       fetchAll(()=>sb.from('memberships').select('*').order('id')),
-      sb.from('lessons').select('member_id,start_at,status').gte('start_at',cut).not('member_id','is',null).limit(5000),
+      sb.from('lessons').select('id,member_id,start_at,status,trainer,lesson_name').gte('start_at',cut).not('member_id','is',null).limit(5000),
       sb.from('tasks').select('*').eq('done',false).order('due_date',{ascending:true,nullsFirst:false}).limit(100),
       // 락커는 회원권과 달리 자동 만료·회수가 없다. 방치되면 배정이 남아 "비어있음"에서 빠지고
       // 재판매가 안 된다(2026-07-30에 34개·최고 703일 방치 발견). 만료 전에 연장을 받는 게 최선이라 홈에 띄운다.
@@ -2910,6 +2916,24 @@ function DashboardView({sb,onNav,onLogout}){
     const newest=Math.max(...lessons.map(l=>new Date(l.start_at).getTime()));
     return Math.floor((Date.now()-newest)/86400000);
   })();
+
+  // 오늘 수업 — 트레이너가 아침에 홈을 열었을 때 가장 먼저 볼 것.
+  // ★기존 위젯 11개가 전부 영업·관리(재등록·미수금·만료) 관점이라 '오늘 뭐 하지'가 없어
+  //   매일 캘린더 탭으로 건너가야 했다. 홈이 이미 42일 전~미래 수업을 들고 있어 추가 쿼리는 없다.
+  // ★프리랜서는 자기 수업만 본다(마스터는 전체). staff.name과 lessons.trainer를 맞춘다.
+  const todayList=(()=>{
+    const s0=new Date(t0); s0.setHours(0,0,0,0);
+    const e0=new Date(s0); e0.setDate(s0.getDate()+1);
+    const mine=String(meName||'').trim();
+    return (lessons||[]).filter(l=>{
+        const d=new Date(l.start_at); if(isNaN(d)||d<s0||d>=e0) return false;
+        if(l.status==='취소') return false;
+        if(role!=='master' && mine && String(l.trainer||'').trim()!==mine) return false;
+        return true; })
+      .sort((a,b)=>a.start_at<b.start_at?-1:1);
+  })();
+  const todayDone=todayList.filter(l=>l.status==='완료').length;
+  const hm=(iso)=>{ const d=new Date(iso); return isNaN(d)?'-':pad(d.getHours())+':'+pad(d.getMinutes()); };
 
   // 생일 위젯이 "없습니다"만 보여주면 데이터가 비어서인지 진짜 없는지 구분이 안 된다.
   const noBirth=(members||[]).filter(m=>!m.birth).length;
@@ -3028,6 +3052,12 @@ function DashboardView({sb,onNav,onLogout}){
       <span>🩺 데이터 이상 {hcBad.length}건이 발견됐습니다 — {hcBad.map(c=>`${c.label} ${c.n}건`).join(' · ')}</span>
       <button className="btn sm" onClick={e=>{e.stopPropagation(); onNav&&onNav('logs');}}>자가진단 보기 →</button>
     </div>}
+    {maintErr.length>0 && <div className="backup-remind"
+        style={{background:'rgba(217,139,122,.12)',borderColor:'rgba(217,139,122,.4)',color:'#e3a091'}}>
+      <span>⚠️ 자동 정비가 실패했습니다 — {maintErr.join(' · ')}
+        <br/><span style={{fontSize:12,opacity:.85}}>지난 예약의 회차 차감과 회원권 만료 처리가 안 됐을 수 있습니다. 잔여 회차가 실제보다 많게 보일 수 있으니 확인해주세요.</span></span>
+      <button className="btn sm" onClick={()=>load()}>다시 시도</button>
+    </div>}
     {can('logs') && (dsb===null||dsb>=7) && <div className="backup-remind" onClick={()=>onNav&&onNav('logs')} style={{cursor:'pointer'}}>
       <span>💾 {dsb===null?'데이터를 아직 파일로 백업한 적이 없어요.':`마지막 파일 백업이 ${dsb}일 전이에요.`} 사고에 대비해 파일 백업을 PC에 보관하세요.</span>
       <button className="btn sm" onClick={e=>{e.stopPropagation(); onNav&&onNav('logs');}}>백업하러 가기 →</button>
@@ -3039,6 +3069,26 @@ function DashboardView({sb,onNav,onLogout}){
       {can('sales') && <div className="stat"><div className="n" style={{color:unpaidTotal>0?'#d98b7a':'var(--muted)'}}>{unpaidTotal.toLocaleString()}<span style={{fontSize:14,fontWeight:600}}>원</span></div><div className="l">미수금 총액</div></div>}
     </div>
     <div className="dash-grid">
+      <div className="mp-cardbox">
+        <h3><span>📋 오늘 수업</span>
+          <span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>
+            {todayList.length}건{todayDone>0?` · 완료 ${todayDone}`:''}</span></h3>
+        {todayList.length===0
+          ? <div className="muted">오늘 예정된 수업이 없습니다
+              {role!=='master'&&meName? <><br/><span style={{fontSize:12}}>({meName} 강사 기준)</span></> : null}</div>
+          : todayList.map(l=>(
+              <div className="dash-row" key={l.id} style={{cursor:l.member_id?'pointer':'default'}}
+                   onClick={()=>{ if(l.member_id) openMember(l.member_id); }}>
+                <div style={{display:'flex',alignItems:'center',gap:9,minWidth:0}}>
+                  <b style={{minWidth:44,color:'var(--brass)'}}>{hm(l.start_at)}</b>
+                  <div style={{minWidth:0}}>
+                    <b style={{display:'block',overflow:'hidden',textOverflow:'ellipsis',whiteSpace:'nowrap'}}>{nm(l.member_id)}</b>
+                    <span className="muted" style={{fontSize:12}}>{l.lesson_name||'수업'}{l.trainer?' · '+l.trainer:''}</span>
+                  </div>
+                </div>
+                <span className={'mini '+l.status}>{l.status}</span>
+              </div>))}
+      </div>
       <div className="mp-cardbox">
         <h3><span>✅ 할 일</span>
           <span style={{display:'flex',gap:8,alignItems:'center'}}>
