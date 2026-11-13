@@ -804,8 +804,10 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
   const expiredCnt=(ms||[]).filter(m=>m.status!=='활성'&&m.status!=='홀딩').length;
   const unpaidTotal=(ms||[]).reduce((s,m)=>s+(m.unpaid||0),0);
   // 회원권별 '예약'(아직 안 한 수업) 건수. remaining_count는 예약할 때 이미 깎이므로
-  //   잔여(안 한 수업 전부) = remaining_count + 예약 건수 / 실잔여(더 예약 가능) = remaining_count
-  // 브로제이의 '잔여 횟수'·'실 잔여 횟수'와 같은 구분이다.
+  //   잔여 = remaining_count (더 예약할 수 있는 횟수 — 예약할 때 이미 깎인다)
+  //   실잔여 = 잔여 + 예약 건수 (아직 진행 안 한 수업 전부)
+  // ★브로제이 표기와 같다: '잔여 횟수' = 예약 가능, '실 잔여 횟수' = 잔여 + 미진행.
+  //   2026-11-13 브로제이 예약권 목록으로 확인(이소정 PT20: 잔여 0 · 실잔여 4 · 미진행 4). 둘을 바꿔 쓰지 말 것.
   const bookedBy=useMemo(()=>{ const o={};
     (ls||[]).forEach(l=>{ if(l.status==='예약'&&l.membership_id) o[l.membership_id]=(o[l.membership_id]||0)+1; });
     return o; },[ls]);
@@ -882,13 +884,13 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
             {ms===null? <div className="muted">불러오는 중...</div> :
               ms.length===0? <div className="muted">보유 회원권이 없습니다</div> :
               ms.map(m=>{ const t=m.total_count||0,r=m.remaining_count||0; const d=dday(m.end_date);
-                const bk=bookedBy[m.id]||0, left=r+bk, used=Math.max(0,t-left);
+                const bk=bookedBy[m.id]||0, real=r+bk, used=Math.max(0,t-real);
                 return (<div className="ms-row" key={m.id} onClick={()=>setMsDetail(m)} title="클릭 시 레슨 이력·소진 현황">
                   <div className="kv"><b>{m.product_name} <span className={'badge b-'+(m.status||'')}>{m.status||'-'}</span></b>
                     {d!=null && <span className={'dday'+(d<0?' expired':'')}>{d<0?'만료':d===0?'오늘 만료':`${d}일 남음`}</span>}</div>
-                  <div className="kv" style={{marginTop:2}}><span>{fmtDate(m.start_date)} ~ {fmtDate(m.end_date)}</span><b>잔여 {left} / {t} <span className="muted">(진행 {used})</span></b></div>
+                  <div className="kv" style={{marginTop:2}}><span>{fmtDate(m.start_date)} ~ {fmtDate(m.end_date)}</span><b>잔여 {r} / {t} <span className="muted">(진행 {used})</span></b></div>
                   <div className="gauge split"><i style={{width:(t?Math.round(r/t*100):0)+'%'}}/>{bk>0 && <i className="bk" style={{width:(t?Math.round(bk/t*100):0)+'%'}}/>}</div>
-                  {bk>0 && <div className="ms-sub">예약 {bk}건 포함 · 실잔여(더 예약 가능) <b>{r}</b>회</div>}
+                  {bk>0 && <div className="ms-sub">예약 {bk}건 · 실잔여 <b>{real}</b>회 <span className="muted">(잔여+예약)</span></div>}
                   {m.unpaid>0 && <div className="kv" style={{marginTop:6}}><span style={{color:'#d98b7a'}}>미수금</span><b style={{color:'#d98b7a'}}>{m.unpaid.toLocaleString()}원</b></div>}
                 </div>); })}
           </div>
@@ -1281,7 +1283,7 @@ function MembershipDetailModal({ms,memberName,lessons,onEdit,onClose}){
 
       <div className="card" style={{padding:'12px 14px',marginBottom:12}}>
         <div className="kv"><span>{fmtDate(ms.start_date)} ~ {fmtDate(ms.end_date)}{ms.trainer?` · ${ms.trainer}`:''}</span>
-          <b style={{fontSize:16}}>잔여 {r+bookedAll} / {t}</b></div>
+          <b style={{fontSize:16}}>잔여 {r} / {t}</b></div>
         <div className="gauge split" style={{marginTop:6}}><i style={{width:(t?Math.round(r/t*100):0)+'%'}}/>{bookedAll>0 && <i className="bk" style={{width:(t?Math.round(bookedAll/t*100):0)+'%'}}/>}</div>
         <div style={{...chip,marginTop:8,display:'flex',flexWrap:'wrap',gap:'2px 12px'}}>
           <span>완료 <b>{done}</b></span>
@@ -1289,7 +1291,7 @@ function MembershipDetailModal({ms,memberName,lessons,onEdit,onClose}){
           {bookedAll>0 && <span>예약 <b>{bookedAll}</b>{bookedFuture!==bookedAll?<span style={{opacity:.7}}> (예정 {bookedFuture})</span>:null}</span>}
           {rest>0 && <span>휴강 <b>{rest}</b> <span style={{opacity:.7}}>(차감 안 됨)</span></span>}
           {gap>0 && <span style={{color:'#d98b7a'}}>기록 없는 소진 <b>{gap}</b></span>}
-          <span style={{color:'var(--brass)'}}>실잔여(더 예약 가능) <b>{r}</b></span>
+          {bookedAll>0 && <span style={{color:'var(--brass)'}}>실잔여 <b>{r+bookedAll}</b> <span style={{opacity:.7}}>(잔여+예약)</span></span>}
         </div>
         {gap>0 && <div className="muted" style={{fontSize:11.5,marginTop:6,lineHeight:1.6}}>
           ※ 소진 {t-r}회 중 {gap}회는 수업 기록에 이 회원권이 연결돼 있지 않습니다(이관분 등). 잔여 회차는 정상입니다.</div>}
@@ -1463,7 +1465,7 @@ function MembersView({sb}){
   async function load(){
     const {data,error}=await fetchAll(()=>sb.from('members').select('*').order('name').order('id')); if(!error) setRows(data);
     const m=await fetchAll(()=>sb.from('memberships').select('*').order('id')); setMsAll(m.data||[]);
-    // 예약 상태 수업 → 회원권별 건수 (잔여 = 실잔여 + 예약)
+    // 예약 상태 수업 → 회원권별 건수 (실잔여 = 잔여 + 예약)
     const bk=await fetchAll(()=>sb.from('lessons').select('id,membership_id').eq('status','예약').not('membership_id','is',null).order('id'));
     const bo={}; (bk.data||[]).forEach(l=>{ bo[l.membership_id]=(bo[l.membership_id]||0)+1; }); setBooked(bo);
     // 마지막 수업일 — 최근 400일만 본다(그보다 오래면 어차피 '오래 안 옴'이라 구분할 필요가 없다)
@@ -1481,7 +1483,7 @@ function MembersView({sb}){
       else if(m.status==='활성'&&m.end_date){ const d=new Date(m.end_date); if(!isNaN(d)){ const dd=Math.ceil((new Date(d.getFullYear(),d.getMonth(),d.getDate())-t0)/86400000); if(dd>=0&&dd<=14) o.soon=true; } } });
     return f; },[msAll]);
   // 회원별 요약(목록 컬럼·필터·정렬이 전부 이걸 본다)
-  //   act=활성·홀딩 회원권 / remain=잔여(예약 포함) / real=실잔여(더 예약 가능) / end=가장 먼저 끝나는 만료일
+  //   act=활성·홀딩 회원권 / remain=잔여(더 예약 가능) / real=실잔여(잔여+예약) / end=가장 먼저 끝나는 만료일
   const info=useMemo(()=>{ const o={};
     msAll.forEach(m=>{ const v=o[m.member_id]=o[m.member_id]||{act:[],unpaid:0};
       v.unpaid+=(m.unpaid||0);
@@ -1489,8 +1491,8 @@ function MembersView({sb}){
     Object.values(o).forEach(v=>{
       v.act.sort((a,b)=>cmpVal(a.end_date,b.end_date,1)||a.id-b.id);
       const cnt=v.act.filter(m=>(m.total_count||0)>0);
-      v.real=cnt.length? cnt.reduce((s,m)=>s+(m.remaining_count||0),0) : null;
-      v.remain=cnt.length? cnt.reduce((s,m)=>s+(m.remaining_count||0)+(booked[m.id]||0),0) : null;
+      v.remain=cnt.length? cnt.reduce((s,m)=>s+(m.remaining_count||0),0) : null;
+      v.real=cnt.length? cnt.reduce((s,m)=>s+(m.remaining_count||0)+(booked[m.id]||0),0) : null;
       const ends=v.act.map(m=>m.end_date).filter(Boolean).sort();
       v.end=ends[0]||null; v.dleft=daysLeft(v.end); v.noEnd=v.act.length>0&&!ends.length;
       v.trainerList=[...new Set(v.act.map(m=>String(m.trainer||'').trim()).filter(Boolean))];
@@ -1595,7 +1597,7 @@ function MembersView({sb}){
   const minW=gridMinWidth(cols,34);
   function applyCols(keys){ setColKeys(keys); saveCols(MCOL_KEY,keys); setColPick(false); }
 
-  const msLabel=m=>{ const t=m.total_count||0; return t? `${m.product_name} ${(m.remaining_count||0)+(booked[m.id]||0)}/${t}` : m.product_name; };
+  const msLabel=m=>{ const t=m.total_count||0; return t? `${m.product_name} ${m.remaining_count||0}/${t}` : m.product_name; };
   function cell(c,r,i){
     const inf=infoOf(r);
     switch(c.k){
@@ -1612,7 +1614,7 @@ function MembersView({sb}){
           {inf.act[0].product_name}{inf.act[0].status==='홀딩'?<span className="mini 휴강">홀딩</span>:null}
           {inf.act.length>1 && <span className="muted"> 외 {inf.act.length-1}</span>}</span> : <span className="muted">-</span>;
       case 'remain': return inf.remain==null? <span className="muted">-</span> : <b style={inf.remain<=3?{color:'#e0a23c'}:undefined}>{inf.remain}</b>;
-      case 'real': return inf.real==null? <span className="muted">-</span> : <span style={inf.real<=0?{color:'#d98b7a'}:undefined}>{inf.real}</span>;
+      case 'real': return inf.real==null? <span className="muted">-</span> : <span>{inf.real}</span>;
       case 'end': return inf.end? <span>{fmtDateShort(inf.end)} <small className={'dd'+(inf.dleft<0?' over':inf.dleft<=14?' soon':'')}>{inf.dleft<0?`${-inf.dleft}일 지남`:inf.dleft===0?'오늘':`D-${inf.dleft}`}</small></span>
         : <span className="muted">{inf.noEnd?'무기한':'-'}</span>;
       case 'trainer': { const t=trainersOf(r); return t.length? <span className="ell" title={t.join(', ')}>{t.join(', ')}</span> : <span className="muted">-</span>; }
@@ -1730,8 +1732,8 @@ function MembersView({sb}){
 
 // ---------- 회원권 목록 (회원 구분 없이 전체) ----------
 // 브로제이 '예약권 목록'에 해당한다. 회차·만료일을 회원 상세마다 들어가지 않고 한 표에서 점검한다.
-//   잔여   = 아직 안 한 수업 전부 (실잔여 + 예약)
-//   실잔여 = 앞으로 더 예약할 수 있는 횟수 (= remaining_count, 예약할 때 이미 깎인 값)
+//   잔여   = 앞으로 더 예약할 수 있는 횟수 (= remaining_count, 예약할 때 이미 깎인 값)
+//   실잔여 = 아직 진행 안 한 수업 전부 (잔여 + 예약) — 브로제이 '예약권 실 잔여 횟수'와 같다
 const MS_COLS=[
   {k:'status',label:'상태',w:'62px',fixed:true},
   {k:'product',label:'회원권',w:'minmax(150px,1.5fr)',fixed:true},
@@ -1763,8 +1765,8 @@ function MembershipListView({members,msAll,booked,lastByMs,loading,onOpen}){
   const mById=useMemo(()=>{ const o={}; members.forEach(m=>o[m.id]=m); return o; },[members]);
   const rows=useMemo(()=>msAll.map(m=>{ const t=m.total_count||0, bk=booked[m.id]||0, r=m.remaining_count||0;
     const dl=daysLeft(m.end_date);
-    const soon=m.status==='활성' && ((dl!=null&&dl>=0&&dl<=14) || (t>0 && r+bk<=3));
-    return {m,mem:mById[m.member_id]||null,t,bk,real:t?r:null,remain:t?r+bk:null,dl,soon,last:lastByMs[m.id]||null}; }),[msAll,booked,mById,lastByMs]);
+    const soon=m.status==='활성' && ((dl!=null&&dl>=0&&dl<=14) || (t>0 && r<=3));
+    return {m,mem:mById[m.member_id]||null,t,bk,remain:t?r:null,real:t?r+bk:null,dl,soon,last:lastByMs[m.id]||null}; }),[msAll,booked,mById,lastByMs]);
   const counts=useMemo(()=>{ const c={전체:rows.length,활성:0,임박:0,홀딩:0,만료:0};
     rows.forEach(x=>{ if(c[x.m.status]!==undefined) c[x.m.status]++; if(x.soon) c.임박++; }); return c; },[rows]);
   const uniq=arr=>[...new Set(arr.map(s=>String(s||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ko'));
@@ -1812,7 +1814,7 @@ function MembershipListView({members,msAll,booked,lastByMs,loading,onOpen}){
         : x.t&&m.status==='활성'? <span style={{color:'#d98b7a'}} title="담당강사가 없으면 이 회원권으로 예약할 수 없습니다">미지정</span> : <span className="muted">-</span>;
       case 'total': return x.t? <span className="muted">{x.t}</span> : <span className="muted">-</span>;
       case 'remain': return x.remain==null? <span className="muted">-</span> : <b style={x.remain<=3&&m.status==='활성'?{color:'#e0a23c'}:undefined}>{x.remain}</b>;
-      case 'real': return x.real==null? <span className="muted">-</span> : <span style={x.real<=0&&m.status==='활성'?{color:'#d98b7a'}:undefined}>{x.real}</span>;
+      case 'real': return x.real==null? <span className="muted">-</span> : <span>{x.real}</span>;
       case 'booked': return x.bk? <span style={{color:'var(--brass)'}}>{x.bk}</span> : <span className="muted">-</span>;
       case 'start': return <span className="muted" title={m.start_date||''}>{m.start_date?fmtDateShort(m.start_date):'-'}</span>;
       case 'end': return m.end_date? <span title={m.end_date}>{fmtDateShort(m.end_date)} <small className={'dd'+(x.dl<0?' over':x.dl<=14?' soon':'')}>{x.dl<0?`${-x.dl}일 지남`:x.dl===0?'오늘':`D-${x.dl}`}</small></span> : <span className="muted">무기한</span>;
@@ -1845,7 +1847,7 @@ function MembershipListView({members,msAll,booked,lastByMs,loading,onOpen}){
     </div>
     <div className="fchips">
       <span className="muted" style={{fontSize:13}}>{filtered.length}건</span>
-      <span className="muted" style={{fontSize:12}}>· <b style={{color:'var(--cream)'}}>잔여</b> = 아직 안 한 수업 전부 · <b style={{color:'var(--cream)'}}>실잔여</b> = 더 예약할 수 있는 횟수 (잔여 − 예약)</span>
+      <span className="muted" style={{fontSize:12}}>· <b style={{color:'var(--cream)'}}>잔여</b> = 더 예약할 수 있는 횟수 · <b style={{color:'var(--cream)'}}>실잔여</b> = 잔여 + 예약된 수업 (브로제이와 같은 기준)</span>
     </div>
     {loading? <div className="empty">회원권 불러오는 중...</div> :
     <div className="list xscroll" style={{marginBottom:40}}>
@@ -1954,7 +1956,7 @@ function BookingModal({sb,date,start:initStart,members,trainers,onClose,onSaved}
   const [name,setName]=useState('1:1 PT'),[guestName,setGuestName]=useState(''),[err,setErr]=useState(''),[busy,setBusy]=useState(false);
   const [title,setTitle]=useState('');   // 일정명(선택) — 수업명과 따로 저장한다
   const [mss,setMss]=useState([]),[msId,setMsId]=useState(null);
-  const [booked,setBooked]=useState({});  // 회원권별 예약(아직 안 한 수업) 건수 → 잔여/예약가능 구분 표시
+  const [booked,setBooked]=useState({});  // 회원권별 예약(아직 안 한 수업) 건수 → 잔여/실잔여 구분 표시
   const selectedMs=msId?mss.find(x=>String(x.id)===String(msId)):null;
   const assignedTrainer=selectedMs?String(selectedMs.trainer||'').trim():'';
   const cands = q? members.filter(m=>{ const digits=q.replace(/\D/g,'');
@@ -2083,7 +2085,7 @@ function BookingModal({sb,date,start:initStart,members,trainers,onClose,onSaved}
             <>
               <select value={msId||''} onChange={e=>{ const id=e.target.value?parseInt(e.target.value):null; const m=mss.find(x=>String(x.id)===String(id)); setMsId(id); setTrainer(m?String(m.trainer||'').trim():''); if(m) setName(defaultLessonType(m)); }}>
                 {mss.map(m=>{ const bk=booked[m.id]||0;
-                  return <option key={m.id} value={m.id}>{m.product_name} · 담당 {m.trainer||'미지정'} · 잔여 {(m.remaining_count||0)+bk}/{m.total_count}{bk?` (예약 ${bk} · 예약가능 ${m.remaining_count})`:''}</option>; })}
+                  return <option key={m.id} value={m.id}>{m.product_name} · 담당 {m.trainer||'미지정'} · 잔여 {m.remaining_count||0}/{m.total_count}{bk?` (예약 ${bk} · 실잔여 ${(m.remaining_count||0)+bk})`:''}</option>; })}
               </select>
               <div className="muted" style={{fontSize:12,marginTop:5}}>선택한 회원권의 담당강사만 예약할 수 있습니다.</div>
             </>}</div>
