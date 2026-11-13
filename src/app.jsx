@@ -55,6 +55,9 @@ function fmtPhone(v){ let d=String(v??'').replace(/\D/g,'').slice(0,11);
 function phoneDigits(v){ return String(v??'').replace(/\D/g,''); }
 function ymd(d){ return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}`; }
 function fmtDate(s){ if(!s) return '-'; const d=new Date(s); return isNaN(d)?'-':`${d.getFullYear()}.${d.getMonth()+1}.${d.getDate()}`; }
+// 목록용 짧은 날짜: 올해면 11.12, 다른 해면 '27.1.11 (칸 폭을 아끼려고)
+function fmtDateShort(s){ if(!s) return '-'; const d=new Date(s); if(isNaN(d)) return '-';
+  const md=`${d.getMonth()+1}.${d.getDate()}`; return d.getFullYear()===new Date().getFullYear()? md : `'${String(d.getFullYear()).slice(2)}.${md}`; }
 function fmtDT(s){ if(!s) return '-'; const d=new Date(s); if(isNaN(d))return '-'; return `${d.getMonth()+1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`; }
 function hm(s){ const d=new Date(s); return isNaN(d)?'':`${pad(d.getHours())}:${pad(d.getMinutes())}`; }
 // 수업 시간 범위: 10:00~10:50 (end_at 없으면 시작시간만)
@@ -95,6 +98,102 @@ async function fetchAll(make){
     from+=1000;
   }
   return {data:all,error:null};
+}
+
+// ---------- 새 컬럼 방어 (SQL 미실행 대비) ----------
+// 앱 배포와 SQL 실행 순서가 어긋나면 "없는 컬럼"에 쓰다가 저장 전체가 실패한다.
+// PostgREST는 그때 `Could not find the 'x' column of 't' in the schema cache`를 준다.
+// → 그 컬럼만 빼고 한 번 더 쓴다. 기존 저장은 계속되고, 새 항목만 SQL 실행 뒤부터 남는다.
+const MISSING_COLS=new Set();   // 't.x' 형태로 기억 — 두 번째부터는 처음에 뺀다
+const PARITY_SQL='db/broj_parity_20261112.sql';
+function missingCol(error){ const m=/Could not find the '([^']+)' column of '([^']+)'/.exec((error&&error.message)||''); return m?{col:m[1],table:m[2]}:null; }
+async function writeSafe(table,run,payload){
+  const strip=(o,c)=>{ const n={...o}; delete n[c]; return n; };
+  let p=payload;
+  const drop=c=>{ p=Array.isArray(p)? p.map(o=>strip(o,c)) : strip(p,c); };
+  MISSING_COLS.forEach(k=>{ const i=k.indexOf('.'); if(k.slice(0,i)===table) drop(k.slice(i+1)); });
+  for(let i=0;i<6;i++){
+    const res=await run(p);
+    const mc=res.error && missingCol(res.error);
+    if(!mc) return res;
+    MISSING_COLS.add(mc.table+'.'+mc.col); drop(mc.col);
+  }
+  return run(p);
+}
+// 방금 쓴 값 중 실제로 버려진 게 있으면 한 번만 알린다(조용히 사라지지 않게).
+let _missingWarned=false;
+function warnDropped(table,payload){
+  if(_missingWarned) return;
+  const one=Array.isArray(payload)?(payload[0]||{}):payload;
+  const lost=[...MISSING_COLS].filter(k=>k.startsWith(table+'.')).map(k=>k.slice(table.length+1))
+    .filter(c=>one[c]!=null && one[c]!=='');
+  if(!lost.length) return;
+  _missingWarned=true;
+  const KO={member_no:'회원번호',purpose:'운동목적',email:'이메일',title:'일정명'};
+  alert(`저장은 됐지만 새 항목(${lost.map(c=>KO[c]||c).join(', ')})은 아직 DB에 칸이 없어 저장되지 않았습니다.\n\nSupabase SQL 에디터에서 ${PARITY_SQL} 을 한 번 실행하면 그 뒤부터 저장됩니다.`);
+}
+
+// ---------- 수업명(종류) / 일정명(자유 입력) ----------
+// 브로제이는 '수업명'과 '일정명'이 다른 칸이다. 한 칸뿐이면 일정명 자리에 회원 이름을 적게 되고
+// (실측: 7월 283건 중 52건) 수업 종류별 통계가 깨진다. → 수업명은 목록에서 고르고,
+// 덧붙일 말은 lessons.title(일정명)에 따로 둔다.
+const LESSON_TYPES=['대표 PT','1:1 PT','컨디셔닝','OT','상담','기타'];
+function lessonCategory(name){ return /대표/.test(name||'')?'대표PT' : /1:1/.test(name||'')?'1:1PT' : 'PT'; }
+// '대표PT'·'1:1pt'처럼 띄어쓰기·대소문자만 다른 것은 목록의 표기로 맞춘다. 목록에 없으면 null.
+function canonLessonType(raw,extra){
+  const k=s=>String(s||'').replace(/\s+/g,'').toLowerCase();
+  const key=k(raw); if(!key) return null;
+  return [...LESSON_TYPES,...(extra||[])].find(t=>k(t)===key)||null;
+}
+function lessonText(l){ return ((l&&l.lesson_name)||'수업')+(l&&l.title?' · '+l.title:''); }
+// 회원권 상품명으로 기본 수업명을 고른다 (실측 규칙: 대표PT 회원권=대표 PT, 그 외=1:1 PT)
+function defaultLessonType(ms){
+  const n=(ms&&ms.product_name)||'';
+  if(/대표/.test(n)) return '대표 PT';
+  if(/컨디셔닝/.test(n)) return '컨디셔닝';
+  return '1:1 PT';
+}
+
+// ---------- 회원 항목 선택지 (브로제이 대조로 추가) ----------
+const SOURCE_OPTS=['네이버','인스타그램','지인 소개','간판·워크인','블로그','당근','기타'];
+const PURPOSE_OPTS=['다이어트','근력 향상','체형 교정','재활','바디프로필','건강 관리','기타'];
+// 회원번호: 따로 저장한 값이 없으면 전화 뒷 4자리를 쓴다(브로제이 출석번호와 같은 관행)
+function memberNo(m){ return (m&&m.member_no) || phoneDigits(m&&m.phone).slice(-4) || ''; }
+// 날짜(YYYY-MM-DD) → 오늘 기준 남은 일수. 과거면 음수, 값이 없으면 null.
+function daysLeft(s){ if(!s) return null; const d=new Date(s); if(isNaN(d)) return null;
+  const t=new Date(); return Math.ceil((new Date(d.getFullYear(),d.getMonth(),d.getDate())-new Date(t.getFullYear(),t.getMonth(),t.getDate()))/86400000); }
+// 지난 일수(마지막 수업 등). 값이 없으면 null.
+function daysAgo(s){ if(!s) return null; const d=new Date(s); if(isNaN(d)) return null;
+  const t=new Date(); return Math.floor((new Date(t.getFullYear(),t.getMonth(),t.getDate())-new Date(d.getFullYear(),d.getMonth(),d.getDate()))/86400000); }
+
+// ---------- 시간 격자 배치 ----------
+// 겹치는 수업은 옆으로 나눠 배치한다. 모바일 주 보기와 PC 일(강사별) 보기가 같이 쓴다.
+function layoutEvents(list){
+  const evs=(list||[]).map(l=>{ const s=new Date(l.start_at);
+    const e=l.end_at?new Date(l.end_at):new Date(s.getTime()+50*60000);
+    return {l,s:s.getHours()*60+s.getMinutes(),e:Math.max(e.getHours()*60+e.getMinutes(),s.getHours()*60+s.getMinutes()+20)};})
+    .sort((a,b)=>a.s-b.s||a.e-b.e);
+  let i=0;
+  while(i<evs.length){                     // 겹침 덩어리 단위로 폭을 나눈다
+    let j=i, end=evs[i].e;
+    while(j+1<evs.length && evs[j+1].s < end){ j++; end=Math.max(end,evs[j].e); }
+    const grp=evs.slice(i,j+1), lanes=[];
+    grp.forEach(ev=>{ let k=0; while(k<lanes.length && lanes[k]>ev.s) k++; ev.lane=k; lanes[k]=ev.e; });
+    grp.forEach(ev=>ev.cols=lanes.length);
+    i=j+1;
+  }
+  return evs;
+}
+// 격자에 그릴 시간대: 기본 7~22시, 수업이 그 밖에 있으면 넓힌다.
+function hourRange(list){
+  let h0=7,h1=22;
+  if(list&&list.length){
+    const sh=Math.min(...list.map(l=>new Date(l.start_at).getHours()));
+    const eh=Math.max(...list.map(l=>{const e=l.end_at?new Date(l.end_at):new Date(new Date(l.start_at).getTime()+50*60000);
+      return e.getHours()+(e.getMinutes()>0?1:0);}));
+    h0=Math.min(h0,sh); h1=Math.max(h1,eh);
+  }
+  return [h0,h1];
 }
 
 // ---------- 자동 백업(스냅샷) ----------
@@ -181,6 +280,17 @@ async function loadActiveTrainerNames(sb){
   (ls.data||[]).forEach(r=>{ if(String(r.trainer||'').trim()) names.add(String(r.trainer).trim()); });
   (tc.data||[]).forEach(r=>{ if(String(r.name||'').trim()) names.add(String(r.name).trim()); });
   return [...names].sort((a,b)=>a.localeCompare(b,'ko'));
+}
+
+// 고르거나 직접 적는 칸 (방문경로·운동목적). 목록은 제안일 뿐이라 없는 값도 적을 수 있다.
+// ★listId는 화면에 동시에 뜨는 다른 칸과 겹치면 안 된다(datalist는 id로 연결된다).
+function OptInput({label,value,onChange,options,listId,placeholder}){
+  return (
+    <div className="field" style={{flex:1}}><label>{label}</label>
+      <input list={listId} value={value||''} onChange={e=>onChange(e.target.value)} placeholder={placeholder||'선택 또는 입력'}/>
+      <datalist id={listId}>{(options||[]).map(o=><option key={o} value={o}/>)}</datalist>
+    </div>
+  );
 }
 
 function TrainerSelect({value,onChange,trainers,label='담당 강사'}){
@@ -490,15 +600,23 @@ function EditMemberModal({sb,member,onClose,onSaved}){
   const [address,setAddress]=useState(member.address||'');
   const [memo,setMemo]=useState(member.memo||'');
   const [tags,setTags]=useState(member.tags||'');
+  const [no,setNo]=useState(member.member_no||''),[source,setSource]=useState(member.source||'');
+  const [purpose,setPurpose]=useState(member.purpose||''),[email,setEmail]=useState(member.email||'');
+  const [manager,setManager]=useState(member.manager||'');
   const [consentAt,setConsentAt]=useState(member.consent_at||null);
   const [consentMkt,setConsentMkt]=useState(!!member.consent_marketing);
   const [busy,setBusy]=useState(false),[err,setErr]=useState('');
   async function save(){
     if(!name.trim()) return setErr('이름을 입력하세요');
+    if(email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setErr('이메일 형식을 확인해주세요');
     setBusy(true);
     const cleanTags=tags.split(',').map(s=>s.trim()).filter(Boolean).join(', ');
-    const {error}=await sb.from('members').update({name:name.trim(),phone:phone||null,birth:birth||null,gender:gender||null,address:address||null,memo:memo||null,tags:cleanTags||null,consent_at:consentAt,consent_marketing:consentMkt}).eq('id',member.id);
+    const patch={name:name.trim(),phone:phone||null,birth:birth||null,gender:gender||null,address:address||null,memo:memo||null,tags:cleanTags||null,
+      member_no:no.trim()||null,source:source.trim()||null,purpose:purpose.trim()||null,email:email.trim()||null,manager:manager.trim()||null,
+      consent_at:consentAt,consent_marketing:consentMkt};
+    const {error}=await writeSafe('members',p=>sb.from('members').update(p).eq('id',member.id),patch);
     setBusy(false); if(error){ setErr('저장 실패: '+error.message); return; }
+    warnDropped('members',patch);
     logAct(sb,'회원정보 수정',name.trim());
     onSaved();
   }
@@ -514,7 +632,17 @@ function EditMemberModal({sb,member,onClose,onSaved}){
         <div className="field" style={{flex:1}}><label>전화번호</label><input value={phone} onChange={e=>setPhone(fmtPhone(e.target.value))} placeholder="010-0000-0000" inputMode="numeric"/></div>
         <div className="field" style={{flex:1}}><label>생년월일</label><input type="date" value={birth} onChange={e=>setBirth(e.target.value)}/></div>
       </div>
+      <div className="row2">
+        <div className="field" style={{width:120}}><label>회원번호</label>
+          <input value={no} onChange={e=>setNo(e.target.value.replace(/[^\w-]/g,'').slice(0,12))} placeholder={phoneDigits(phone).slice(-4)||'자동'} inputMode="numeric"/></div>
+        <div className="field" style={{flex:1}}><label>이메일</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="선택"/></div>
+      </div>
+      <div className="row2">
+        <OptInput label="방문경로" value={source} onChange={setSource} options={SOURCE_OPTS} listId="edit-source"/>
+        <OptInput label="운동목적" value={purpose} onChange={setPurpose} options={PURPOSE_OPTS} listId="edit-purpose"/>
+      </div>
       <div className="field"><label>주소</label><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="주소"/></div>
+      <div className="field"><label>상담 담당</label><input value={manager} onChange={e=>setManager(e.target.value)} placeholder="담당자 이름"/></div>
       <div className="field"><label>메모</label><input value={memo} onChange={e=>setMemo(e.target.value)} placeholder="특이사항"/></div>
       <div className="field"><label>태그 <span className="muted">(쉼표로 구분)</span></label><input value={tags} onChange={e=>setTags(e.target.value)} placeholder="예: 재활, 대회준비, 소개고객"/></div>
       <div className="field"><label>개인정보 동의</label>
@@ -667,7 +795,7 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
   const upcoming=(ls||[]).filter(l=>l.status==='예약'&&l.start_at>=nowISO).slice().sort((a,b)=>a.start_at<b.start_at?-1:1);
   const past=(ls||[]).filter(l=>!(l.status==='예약'&&l.start_at>=nowISO));
   const lessonList = lessonTab==='upcoming'? upcoming : past;
-  const num=(member.phone||'').replace(/\D/g,'').slice(-4);
+  const num=memberNo(member);   // 회원번호(없으면 전화 뒷 4자리)
   const initials=(member.name||'?').trim().slice(0,2);
   const daysSince = member.reg_date && !isNaN(new Date(member.reg_date)) ? Math.max(0,Math.floor((Date.now()-new Date(member.reg_date))/86400000)) : null;
   const _t0=new Date(); const _today0=new Date(_t0.getFullYear(),_t0.getMonth(),_t0.getDate());
@@ -675,6 +803,12 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
   const validCnt=(ms||[]).filter(m=>m.status==='활성'||m.status==='홀딩').length;
   const expiredCnt=(ms||[]).filter(m=>m.status!=='활성'&&m.status!=='홀딩').length;
   const unpaidTotal=(ms||[]).reduce((s,m)=>s+(m.unpaid||0),0);
+  // 회원권별 '예약'(아직 안 한 수업) 건수. remaining_count는 예약할 때 이미 깎이므로
+  //   잔여(안 한 수업 전부) = remaining_count + 예약 건수 / 실잔여(더 예약 가능) = remaining_count
+  // 브로제이의 '잔여 횟수'·'실 잔여 횟수'와 같은 구분이다.
+  const bookedBy=useMemo(()=>{ const o={};
+    (ls||[]).forEach(l=>{ if(l.status==='예약'&&l.membership_id) o[l.membership_id]=(o[l.membership_id]||0)+1; });
+    return o; },[ls]);
   // 노쇼 이력 — 날짜·수업·몇 회차였는지·사유.
   // ★'회차'는 저장돼 있지 않다. 같은 회원권에 묶인 수업을 시간순으로 세어 순번을 만든다
   //   (회원권이 연결 안 된 이전분 수업은 순번을 낼 수 없어 '-'로 둔다).
@@ -709,6 +843,9 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
             <div className="kv"><span>주소</span><b>{member.address||'-'}</b></div>
             <div className="kv"><span>등록일</span><b>{fmtDate(member.reg_date)}{daysSince!=null?` · ${daysSince}일`:''}</b></div>
             <div className="kv"><span>누적결제</span><b>{(member.cumulative_payment||0).toLocaleString()}원</b></div>
+            <div className="kv"><span>방문경로</span><b>{member.source||'-'}</b></div>
+            <div className="kv"><span>운동목적</span><b>{member.purpose||'-'}</b></div>
+            {member.email && <div className="kv"><span>이메일</span><b>{member.email}</b></div>}
             <div className="kv"><span>상담담당</span><b>{member.manager||'-'}</b></div>
             <div className="kv"><span>담당 선생님</span>
               {role==='master'
@@ -744,12 +881,14 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
             <h3><span>회원권 현황</span><span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600}}>유효 {validCnt} · 만료 {expiredCnt}</span></h3>
             {ms===null? <div className="muted">불러오는 중...</div> :
               ms.length===0? <div className="muted">보유 회원권이 없습니다</div> :
-              ms.map(m=>{ const t=m.total_count||0,r=m.remaining_count||0,used=Math.max(0,t-r); const d=dday(m.end_date);
+              ms.map(m=>{ const t=m.total_count||0,r=m.remaining_count||0; const d=dday(m.end_date);
+                const bk=bookedBy[m.id]||0, left=r+bk, used=Math.max(0,t-left);
                 return (<div className="ms-row" key={m.id} onClick={()=>setMsDetail(m)} title="클릭 시 레슨 이력·소진 현황">
                   <div className="kv"><b>{m.product_name} <span className={'badge b-'+(m.status||'')}>{m.status||'-'}</span></b>
                     {d!=null && <span className={'dday'+(d<0?' expired':'')}>{d<0?'만료':d===0?'오늘 만료':`${d}일 남음`}</span>}</div>
-                  <div className="kv" style={{marginTop:2}}><span>{fmtDate(m.start_date)} ~ {fmtDate(m.end_date)}</span><b>{r} / {t} <span className="muted">(사용 {used})</span></b></div>
-                  <div className="gauge"><i style={{width:(t?Math.round(r/t*100):0)+'%'}}/></div>
+                  <div className="kv" style={{marginTop:2}}><span>{fmtDate(m.start_date)} ~ {fmtDate(m.end_date)}</span><b>잔여 {left} / {t} <span className="muted">(진행 {used})</span></b></div>
+                  <div className="gauge split"><i style={{width:(t?Math.round(r/t*100):0)+'%'}}/>{bk>0 && <i className="bk" style={{width:(t?Math.round(bk/t*100):0)+'%'}}/>}</div>
+                  {bk>0 && <div className="ms-sub">예약 {bk}건 포함 · 실잔여(더 예약 가능) <b>{r}</b>회</div>}
                   {m.unpaid>0 && <div className="kv" style={{marginTop:6}}><span style={{color:'#d98b7a'}}>미수금</span><b style={{color:'#d98b7a'}}>{m.unpaid.toLocaleString()}원</b></div>}
                 </div>); })}
           </div>
@@ -762,7 +901,7 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
             {ls===null? <div className="muted">불러오는 중...</div> :
               lessonList.length===0? <div className="muted">{lessonTab==='upcoming'?'예정된 예약이 없습니다':'지난 수업 기록이 없습니다'}</div> :
               lessonList.slice(0,8).map(l=>(<div className="card" key={l.id} style={{padding:'9px 14px'}}>
-                <div className="kv"><b>{l.lesson_name||'수업'} <span className={'mini '+l.status}>{l.status}</span></b><span>{fmtDT(l.start_at)}</span></div>
+                <div className="kv"><b>{lessonText(l)} <span className={'mini '+l.status}>{l.status}</span></b><span>{fmtDT(l.start_at)}</span></div>
                 <div className="kv"><span>{l.trainer||'-'}{(()=>{ const mm=(ms||[]).find(x=>String(x.id)===String(l.membership_id));
                   return mm? <span className="muted"> · {mm.product_name}</span> : (!l.membership_id? <span className="muted"> · 회원권 미지정</span> : null); })()}</span><span>{l.noshow_reason?('노쇼: '+l.noshow_reason):(l.price?l.price.toLocaleString()+'원':'')}</span></div>
               </div>))}
@@ -791,7 +930,7 @@ function Detail({sb,member:m0,onClose,panel,panelTop}){
                 <thead><tr><th>날짜</th><th>수업</th><th>회차</th><th>사유</th></tr></thead>
                 <tbody>{noshows.map(l=>(<tr key={l.id}>
                   <td style={{whiteSpace:'nowrap'}}>{fmtDate(l.start_at)}<br/><span className="muted" style={{fontSize:11}}>{hm(l.start_at)}</span></td>
-                  <td>{l.lesson_name||'수업'}<br/><span className="muted" style={{fontSize:11}}>{l.trainer||'강사 미지정'}</span></td>
+                  <td>{lessonText(l)}<br/><span className="muted" style={{fontSize:11}}>{l.trainer||'강사 미지정'}</span></td>
                   <td style={{whiteSpace:'nowrap'}}>{l.seq? <>{l.seq}회차{l.ms&&l.ms.total?<span className="muted">/{l.ms.total}</span>:null}<br/><span className="muted" style={{fontSize:11}}>{l.ms?l.ms.name:''}</span></> : <span className="muted">-</span>}</td>
                   <td style={{color:l.noshow_reason?'var(--cream)':'var(--muted)'}}>{l.noshow_reason||'사유 없음'}</td>
                 </tr>))}</tbody>
@@ -1106,7 +1245,7 @@ function LessonHistoryModal({member,lessons,memberships,initialTab,onClose}){
       <div style={{maxHeight:'62vh',overflowY:'auto'}}>
         {list.length===0? <div className="muted" style={{padding:'20px 0',textAlign:'center'}}>{tab==='upcoming'?'예정된 예약이 없습니다':'지난 수업 기록이 없습니다'}</div> :
           list.map(l=>(<div className="card" key={l.id} style={{padding:'10px 14px'}}>
-            <div className="kv"><b>{l.lesson_name||'수업'} <span className={'mini '+l.status}>{l.status}</span></b><span>{fmtDT(l.start_at)}</span></div>
+            <div className="kv"><b>{lessonText(l)} <span className={'mini '+l.status}>{l.status}</span></b><span>{fmtDT(l.start_at)}</span></div>
             <div className="kv"><span>{l.trainer||'-'}{msName(l.membership_id)?<span className="muted"> · {msName(l.membership_id)}</span>:(!l.membership_id?<span className="muted"> · 회원권 미지정</span>:'')}</span><span>{l.noshow_reason?('노쇼: '+l.noshow_reason):(l.price?l.price.toLocaleString()+'원':'')}</span></div>
           </div>))}
       </div>
@@ -1142,15 +1281,15 @@ function MembershipDetailModal({ms,memberName,lessons,onEdit,onClose}){
 
       <div className="card" style={{padding:'12px 14px',marginBottom:12}}>
         <div className="kv"><span>{fmtDate(ms.start_date)} ~ {fmtDate(ms.end_date)}{ms.trainer?` · ${ms.trainer}`:''}</span>
-          <b style={{fontSize:16}}>{r} / {t}</b></div>
-        <div className="gauge" style={{marginTop:6}}><i style={{width:(t?Math.round(r/t*100):0)+'%'}}/></div>
+          <b style={{fontSize:16}}>잔여 {r+bookedAll} / {t}</b></div>
+        <div className="gauge split" style={{marginTop:6}}><i style={{width:(t?Math.round(r/t*100):0)+'%'}}/>{bookedAll>0 && <i className="bk" style={{width:(t?Math.round(bookedAll/t*100):0)+'%'}}/>}</div>
         <div style={{...chip,marginTop:8,display:'flex',flexWrap:'wrap',gap:'2px 12px'}}>
           <span>완료 <b>{done}</b></span>
           {ns>0 && <span>노쇼 <b>{ns}</b></span>}
-          {bookedFuture>0 && <span>예정 예약 <b>{bookedFuture}</b></span>}
+          {bookedAll>0 && <span>예약 <b>{bookedAll}</b>{bookedFuture!==bookedAll?<span style={{opacity:.7}}> (예정 {bookedFuture})</span>:null}</span>}
           {rest>0 && <span>휴강 <b>{rest}</b> <span style={{opacity:.7}}>(차감 안 됨)</span></span>}
           {gap>0 && <span style={{color:'#d98b7a'}}>기록 없는 소진 <b>{gap}</b></span>}
-          <span style={{color:'var(--brass)'}}>앞으로 예약 가능 <b>{r}</b></span>
+          <span style={{color:'var(--brass)'}}>실잔여(더 예약 가능) <b>{r}</b></span>
         </div>
         {gap>0 && <div className="muted" style={{fontSize:11.5,marginTop:6,lineHeight:1.6}}>
           ※ 소진 {t-r}회 중 {gap}회는 수업 기록에 이 회원권이 연결돼 있지 않습니다(이관분 등). 잔여 회차는 정상입니다.</div>}
@@ -1163,7 +1302,7 @@ function MembershipDetailModal({ms,memberName,lessons,onEdit,onClose}){
         : <div style={{maxHeight:'46vh',overflowY:'auto'}}>{list.map(l=>(
             <div className="card" key={l.id} style={{padding:'9px 14px'}}>
               <div className="kv"><b><span className="muted" style={{fontSize:12,marginRight:8}}>{seq[l.id]?seq[l.id]+'회차':'—'}</span>
-                {l.lesson_name||'수업'} <span className={'mini '+l.status}>{l.status}</span></b><span>{when(l.start_at)}</span></div>
+                {lessonText(l)} <span className={'mini '+l.status}>{l.status}</span></b><span>{when(l.start_at)}</span></div>
               <div className="kv"><span>{l.trainer||'-'}</span>
                 <span>{l.noshow_reason?('노쇼: '+l.noshow_reason):(l.price?l.price.toLocaleString()+'원':'')}</span></div>
             </div>))}</div>}
@@ -1174,20 +1313,165 @@ function MembershipDetailModal({ms,memberName,lessons,onEdit,onClose}){
 }
 
 // ---------- 회원 목록 ----------
+// 컬럼 정의 — fixed는 항상 보이고, 나머지는 [컬럼] 버튼에서 켜고 끈다(선택은 이 브라우저에 저장).
+// w는 CSS 격자 폭. 맨 앞 숫자가 최소 폭이라 그 합으로 가로 스크롤 여부가 정해진다.
+const MEMBER_COLS=[
+  {k:'no',label:'번호',w:'44px',fixed:true},
+  {k:'status',label:'상태',w:'66px',fixed:true},
+  {k:'name',label:'고객명',w:'minmax(92px,1.1fr)',fixed:true},
+  {k:'mno',label:'회원번호',w:'72px'},
+  {k:'gender',label:'성별',w:'54px'},
+  {k:'birth',label:'생년월일',w:'98px'},
+  {k:'age',label:'나이',w:'56px'},
+  {k:'phone',label:'연락처',w:'minmax(118px,1fr)'},
+  {k:'ms',label:'보유 회원권',w:'minmax(150px,1.5fr)'},
+  {k:'remain',label:'잔여',w:'58px',num:true},
+  {k:'real',label:'실잔여',w:'62px',num:true},
+  {k:'end',label:'만료일',w:'104px'},
+  {k:'trainer',label:'담당강사',w:'86px'},
+  {k:'last',label:'마지막 수업',w:'104px'},
+  {k:'unpaid',label:'미수금',w:'96px',num:true},
+  {k:'paid',label:'누적 결제',w:'104px',num:true},
+  {k:'reg',label:'등록일',w:'76px'},
+  {k:'source',label:'방문경로',w:'92px'},
+  {k:'purpose',label:'운동목적',w:'92px'},
+  {k:'manager',label:'상담담당',w:'86px'},
+  {k:'tags',label:'태그',w:'minmax(96px,1fr)'},
+];
+const MEMBER_COLS_DEFAULT=['gender','age','phone','ms','remain','end','trainer','last'];
+const MCOL_KEY='gl_member_cols';
+// 저장해 둔 컬럼 선택을 읽는다. 지금 정의에 없는 키(이름이 바뀐 컬럼 등)는 버린다.
+function loadCols(key,defs,fallback){
+  try{ const v=JSON.parse(localStorage.getItem(key));
+    if(Array.isArray(v)) return v.filter(k=>defs.some(c=>c.k===k&&!c.fixed)); }catch(e){}
+  return fallback;
+}
+function saveCols(key,keys){ try{ localStorage.setItem(key,JSON.stringify(keys)); }catch(e){} }
+// 격자 폭 합(가로 스크롤 기준). extra=체크박스 칸 등 앞에 붙는 고정 폭.
+function gridMinWidth(cols,extra){ return cols.reduce((s,c)=>s+(parseInt((String(c.w).match(/\d+/)||[0])[0])||0),extra||0)+(cols.length+1)*8+32; }
+// 정렬 비교: 빈 값은 방향과 상관없이 항상 맨 아래로 보낸다.
+function cmpVal(a,b,dir){
+  const ea=(a==null||a===''), eb=(b==null||b==='');
+  if(ea&&eb) return 0; if(ea) return 1; if(eb) return -1;
+  if(typeof a==='number'&&typeof b==='number') return (a-b)*dir;
+  return String(a).localeCompare(String(b),'ko')*dir;
+}
+const EMPTY_FILTER={has:'',remainLe:'',endFrom:'',endTo:'',dleftLe:'',absentGe:'',trainer:'',gender:'',birthMonth:'',source:'',purpose:'',unpaid:false,regFrom:'',regTo:''};
+
+// 조건 필터 창 (브로제이 '간편필터'에서 PT센터가 실제로 쓸 조건만 추렸다)
+function MemberFilterModal({value,trainers,sources,purposes,onApply,onClose}){
+  useEsc(onClose);
+  const [f,setF]=useState({...EMPTY_FILTER,...value});
+  const set=(k,v)=>setF(p=>({...p,[k]:v}));
+  const numOnly=v=>String(v).replace(/\D/g,'').slice(0,4);
+  return (
+    <div className="modal-ov" onClick={onClose}><div className="modal" style={{maxWidth:540}} onClick={e=>e.stopPropagation()}>
+      <div className="mhead"><h3>조건 필터</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+      <div className="preset">
+        <button onClick={()=>setF({...EMPTY_FILTER,has:'y',remainLe:'3'})}>재등록 대상 · 잔여 3회 이하</button>
+        <button onClick={()=>setF({...EMPTY_FILTER,has:'y',dleftLe:'30'})}>만료 30일 이내</button>
+        <button onClick={()=>setF({...EMPTY_FILTER,has:'y',absentGe:'14'})}>14일 이상 미방문</button>
+        <button onClick={()=>setF({...EMPTY_FILTER,unpaid:true})}>미수금 있음</button>
+      </div>
+      <div className="field"><label>회원권 보유</label>
+        <div className="seg">{[['','전체'],['y','보유'],['n','미보유']].map(([k,l])=>(
+          <button key={k} type="button" className={f.has===k?'on':''} onClick={()=>set('has',k)}>{l}</button>))}</div></div>
+      <div className="row2">
+        <div className="field" style={{flex:1}}><label>잔여 횟수 <span className="muted">· N회 이하</span></label>
+          <input inputMode="numeric" value={f.remainLe} onChange={e=>set('remainLe',numOnly(e.target.value))} placeholder="예: 3"/></div>
+        <div className="field" style={{flex:1}}><label>만료까지 <span className="muted">· N일 이내</span></label>
+          <input inputMode="numeric" value={f.dleftLe} onChange={e=>set('dleftLe',numOnly(e.target.value))} placeholder="예: 30"/></div>
+      </div>
+      <div className="row2">
+        <div className="field" style={{flex:1}}><label>만료일 <span className="muted">· 부터</span></label><input type="date" value={f.endFrom} onChange={e=>set('endFrom',e.target.value)}/></div>
+        <div className="field" style={{flex:1}}><label>만료일 <span className="muted">· 까지</span></label><input type="date" value={f.endTo} onChange={e=>set('endTo',e.target.value)}/></div>
+      </div>
+      <div className="row2">
+        <div className="field" style={{flex:1}}><label>미방문 <span className="muted">· N일 이상 수업 없음</span></label>
+          <input inputMode="numeric" value={f.absentGe} onChange={e=>set('absentGe',numOnly(e.target.value))} placeholder="예: 14"/></div>
+        <div className="field" style={{flex:1}}><label>담당강사</label>
+          <select value={f.trainer} onChange={e=>set('trainer',e.target.value)}><option value="">전체</option>{trainers.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+      </div>
+      <div className="row2">
+        <div className="field" style={{flex:1}}><label>성별</label>
+          <select value={f.gender} onChange={e=>set('gender',e.target.value)}><option value="">전체</option><option>남성</option><option>여성</option></select></div>
+        <div className="field" style={{flex:1}}><label>생일</label>
+          <select value={f.birthMonth} onChange={e=>set('birthMonth',e.target.value)}><option value="">전체</option>
+            {Array.from({length:12},(_,i)=>i+1).map(m=><option key={m} value={m}>{m}월</option>)}</select></div>
+      </div>
+      <div className="row2">
+        <div className="field" style={{flex:1}}><label>방문경로</label>
+          <select value={f.source} onChange={e=>set('source',e.target.value)}><option value="">전체</option>{sources.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+        <div className="field" style={{flex:1}}><label>운동목적</label>
+          <select value={f.purpose} onChange={e=>set('purpose',e.target.value)}><option value="">전체</option>{purposes.map(t=><option key={t} value={t}>{t}</option>)}</select></div>
+      </div>
+      <div className="row2">
+        <div className="field" style={{flex:1}}><label>등록일 <span className="muted">· 부터</span></label><input type="date" value={f.regFrom} onChange={e=>set('regFrom',e.target.value)}/></div>
+        <div className="field" style={{flex:1}}><label>등록일 <span className="muted">· 까지</span></label><input type="date" value={f.regTo} onChange={e=>set('regTo',e.target.value)}/></div>
+      </div>
+      <label className="chk" style={{margin:'2px 0 12px'}}><input type="checkbox" checked={!!f.unpaid} onChange={e=>set('unpaid',e.target.checked)}/> 미수금이 있는 회원만</label>
+      <p className="muted" style={{fontSize:12,margin:'0 0 12px',lineHeight:1.6}}>
+        잔여·만료는 <b>활성 회원권</b> 기준입니다. 미방문은 최근 완료·노쇼 수업 기준이며 수업 기록이 없는 회원도 포함됩니다
+        — 위쪽 <b>활성</b> 탭과 같이 쓰면 다니는 회원만 걸러집니다.</p>
+      <div style={{display:'flex',gap:8}}>
+        <button className="btn ghost" style={{flex:1}} onClick={()=>setF({...EMPTY_FILTER})}>초기화</button>
+        <button className="btn" style={{flex:2}} onClick={()=>onApply(f)}>필터 적용</button>
+      </div>
+    </div></div>
+  );
+}
+
+// 보일 컬럼 고르기
+function ColumnPickModal({cols,value,defaults,onApply,onClose}){
+  useEsc(onClose);
+  const [on,setOn]=useState(()=>new Set(value));
+  const toggle=k=>setOn(p=>{ const n=new Set(p); n.has(k)?n.delete(k):n.add(k); return n; });
+  return (
+    <div className="modal-ov" onClick={onClose}><div className="modal" style={{maxWidth:440}} onClick={e=>e.stopPropagation()}>
+      <div className="mhead"><h3>표시할 컬럼</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+      <p className="muted" style={{fontSize:12,marginTop:0}}>{cols.filter(c=>c.fixed).map(c=>c.label).join('·')}은 항상 보입니다. 선택은 이 브라우저에 저장됩니다.</p>
+      <div className="colpick">
+        {cols.filter(c=>!c.fixed).map(c=>(
+          <label key={c.k} className={'chk colpick-it'+(on.has(c.k)?' on':'')}>
+            <input type="checkbox" checked={on.has(c.k)} onChange={()=>toggle(c.k)}/> {c.label}</label>))}
+      </div>
+      <div style={{display:'flex',gap:8,marginTop:14}}>
+        <button className="btn ghost" style={{flex:1}} onClick={()=>setOn(new Set(defaults))}>기본값</button>
+        <button className="btn" style={{flex:2}} onClick={()=>onApply(cols.filter(c=>!c.fixed&&on.has(c.k)).map(c=>c.k))}>적용</button>
+      </div>
+    </div></div>
+  );
+}
+
 function MembersView({sb}){
   const {can}=usePerm();
+  const [sub,setSub]=useState('members');   // members=회원 목록 / passes=회원권 목록
   const [rows,setRows]=useState(null);
   const [q,setQ]=useState(''),[query,setQuery]=useState(''),[tab,setTab]=useState('전체');
   function doSearch(v){ setQuery((v??q).trim()); }
   const [sel,setSel]=useState(null);
   const [adding,setAdding]=useState(false);
-  const [sort,setSort]=useState('name');
+  const [sort,setSort]=useState({key:'name',dir:1});
   const [tagF,setTagF]=useState('');
   const [checked,setChecked]=useState(()=>new Set());
   const [msAll,setMsAll]=useState([]);
+  const [booked,setBooked]=useState({});          // 회원권별 '예약' 건수
+  const [lastBy,setLastBy]=useState({m:{},ms:{}}); // 마지막 수업(완료·노쇼): 회원별 / 회원권별
+  const [colKeys,setColKeys]=useState(()=>loadCols(MCOL_KEY,MEMBER_COLS,MEMBER_COLS_DEFAULT));
+  const [colPick,setColPick]=useState(false);
+  const [filt,setFilt]=useState(EMPTY_FILTER),[filtOpen,setFiltOpen]=useState(false);
   async function load(){
     const {data,error}=await fetchAll(()=>sb.from('members').select('*').order('name').order('id')); if(!error) setRows(data);
-    const m=await fetchAll(()=>sb.from('memberships').select('member_id,status,end_date').order('id')); setMsAll(m.data||[]);
+    const m=await fetchAll(()=>sb.from('memberships').select('*').order('id')); setMsAll(m.data||[]);
+    // 예약 상태 수업 → 회원권별 건수 (잔여 = 실잔여 + 예약)
+    const bk=await fetchAll(()=>sb.from('lessons').select('id,membership_id').eq('status','예약').not('membership_id','is',null).order('id'));
+    const bo={}; (bk.data||[]).forEach(l=>{ bo[l.membership_id]=(bo[l.membership_id]||0)+1; }); setBooked(bo);
+    // 마지막 수업일 — 최근 400일만 본다(그보다 오래면 어차피 '오래 안 옴'이라 구분할 필요가 없다)
+    const cut=new Date(Date.now()-400*86400000).toISOString();
+    const ls=await fetchAll(()=>sb.from('lessons').select('id,member_id,membership_id,start_at').in('status',['완료','노쇼']).gte('start_at',cut).order('start_at',{ascending:false}).order('id'));
+    const lm={},lms={};
+    (ls.data||[]).forEach(l=>{ if(l.member_id&&!lm[l.member_id]) lm[l.member_id]=l.start_at; if(l.membership_id&&!lms[l.membership_id]) lms[l.membership_id]=l.start_at; });
+    setLastBy({m:lm,ms:lms});
   }
   useEffect(()=>{ load(); },[]);
   // 회원별 임박(활성 회원권 D-14 이내) / 홀딩(홀딩 회원권 보유) 플래그
@@ -1196,6 +1480,26 @@ function MembersView({sb}){
       if(m.status==='홀딩') o.hold=true;
       else if(m.status==='활성'&&m.end_date){ const d=new Date(m.end_date); if(!isNaN(d)){ const dd=Math.ceil((new Date(d.getFullYear(),d.getMonth(),d.getDate())-t0)/86400000); if(dd>=0&&dd<=14) o.soon=true; } } });
     return f; },[msAll]);
+  // 회원별 요약(목록 컬럼·필터·정렬이 전부 이걸 본다)
+  //   act=활성·홀딩 회원권 / remain=잔여(예약 포함) / real=실잔여(더 예약 가능) / end=가장 먼저 끝나는 만료일
+  const info=useMemo(()=>{ const o={};
+    msAll.forEach(m=>{ const v=o[m.member_id]=o[m.member_id]||{act:[],unpaid:0};
+      v.unpaid+=(m.unpaid||0);
+      if(m.status==='활성'||m.status==='홀딩') v.act.push(m); });
+    Object.values(o).forEach(v=>{
+      v.act.sort((a,b)=>cmpVal(a.end_date,b.end_date,1)||a.id-b.id);
+      const cnt=v.act.filter(m=>(m.total_count||0)>0);
+      v.real=cnt.length? cnt.reduce((s,m)=>s+(m.remaining_count||0),0) : null;
+      v.remain=cnt.length? cnt.reduce((s,m)=>s+(m.remaining_count||0)+(booked[m.id]||0),0) : null;
+      const ends=v.act.map(m=>m.end_date).filter(Boolean).sort();
+      v.end=ends[0]||null; v.dleft=daysLeft(v.end); v.noEnd=v.act.length>0&&!ends.length;
+      v.trainerList=[...new Set(v.act.map(m=>String(m.trainer||'').trim()).filter(Boolean))];
+    });
+    return o; },[msAll,booked]);
+  const EMPTY_INFO={act:[],unpaid:0,real:null,remain:null,end:null,dleft:null,noEnd:false,trainerList:[]};
+  const infoOf=r=>info[r.id]||EMPTY_INFO;
+  const lastOf=r=>lastBy.m[r.id]||null;
+  const trainersOf=r=>{ const i=infoOf(r); return i.trainerList.length? i.trainerList : (r.assigned_trainer?[r.assigned_trainer]:[]); };
   // 임박/홀딩은 회원권 플래그 OR (브로제이 이전분) 회원 status 값으로 판정 — 이중집계 방지
   const isSoon=r=>((msFlags[r.id]&&msFlags[r.id].soon)||r.status==='임박');
   const isHold=r=>((msFlags[r.id]&&msFlags[r.id].hold)||r.status==='홀딩');
@@ -1204,25 +1508,134 @@ function MembersView({sb}){
   const allTags=useMemo(()=>{ const s=new Set();
     (rows||[]).forEach(r=>(r.tags||'').split(',').forEach(t=>{ t=t.trim(); if(t) s.add(t); }));
     return [...s].sort((a,b)=>a.localeCompare(b,'ko')); },[rows]);
+  const uniq=(arr)=>[...new Set(arr.map(s=>String(s||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ko'));
+  const trainerOpts=useMemo(()=>uniq(msAll.filter(m=>m.status==='활성'||m.status==='홀딩').map(m=>m.trainer)),[msAll]);
+  const sourceOpts=useMemo(()=>uniq([...(rows||[]).map(r=>r.source),...SOURCE_OPTS]),[rows]);
+  const purposeOpts=useMemo(()=>uniq([...(rows||[]).map(r=>r.purpose),...PURPOSE_OPTS]),[rows]);
+
+  // ── 조건 필터 ──
+  function passFilter(r){
+    const f=filt, i=infoOf(r);
+    if(f.has==='y' && !i.act.length) return false;
+    if(f.has==='n' && i.act.length) return false;
+    if(f.remainLe!=='' && !(i.remain!=null && i.remain<=Number(f.remainLe))) return false;
+    if(f.dleftLe!=='' && !(i.dleft!=null && i.dleft<=Number(f.dleftLe))) return false;
+    if(f.endFrom||f.endTo){ if(!i.end) return false; if(f.endFrom&&i.end<f.endFrom) return false; if(f.endTo&&i.end>f.endTo) return false; }
+    if(f.absentGe!==''){ const ago=daysAgo(lastOf(r)); if(!(ago==null || ago>=Number(f.absentGe))) return false; }
+    if(f.trainer && !trainersOf(r).includes(f.trainer)) return false;
+    if(f.gender && (r.gender||'')!==f.gender) return false;
+    if(f.birthMonth && !(r.birth && Number(String(r.birth).slice(5,7))===Number(f.birthMonth))) return false;
+    if(f.source && (r.source||'')!==f.source) return false;
+    if(f.purpose && (r.purpose||'')!==f.purpose) return false;
+    if(f.unpaid && !(i.unpaid>0)) return false;
+    if(f.regFrom && !((r.reg_date||'')>=f.regFrom)) return false;
+    if(f.regTo && !(r.reg_date && r.reg_date<=f.regTo)) return false;
+    return true;
+  }
+  const filtChips=(()=>{ const f=filt, c=[];
+    if(f.has) c.push(['has',f.has==='y'?'회원권 보유':'회원권 미보유']);
+    if(f.remainLe!=='') c.push(['remainLe',`잔여 ${f.remainLe}회 이하`]);
+    if(f.dleftLe!=='') c.push(['dleftLe',`만료 ${f.dleftLe}일 이내`]);
+    if(f.endFrom||f.endTo) c.push(['end',`만료일 ${f.endFrom||''}~${f.endTo||''}`]);
+    if(f.absentGe!=='') c.push(['absentGe',`${f.absentGe}일 이상 미방문`]);
+    if(f.trainer) c.push(['trainer',`담당 ${f.trainer}`]);
+    if(f.gender) c.push(['gender',f.gender]);
+    if(f.birthMonth) c.push(['birthMonth',`${f.birthMonth}월 생일`]);
+    if(f.source) c.push(['source',`경로 ${f.source}`]);
+    if(f.purpose) c.push(['purpose',`목적 ${f.purpose}`]);
+    if(f.unpaid) c.push(['unpaid','미수금 있음']);
+    if(f.regFrom||f.regTo) c.push(['reg',`등록일 ${f.regFrom||''}~${f.regTo||''}`]);
+    return c; })();
+  function dropChip(k){ setFilt(p=>{ const n={...p};
+    if(k==='end'){ n.endFrom=''; n.endTo=''; } else if(k==='reg'){ n.regFrom=''; n.regTo=''; }
+    else n[k]=EMPTY_FILTER[k]; return n; }); }
+
   const filtered = (rows||[]).filter(r=>{
     if(tab==='임박'){ if(!isSoon(r)) return false; }
     else if(tab==='홀딩'){ if(!isHold(r)) return false; }
     else if(tab==='동의미확보'){ if(r.consent_at) return false; }
     else if(tab!=='전체' && r.status!==tab) return false;
     if(tagF && !(r.tags||'').split(',').map(s=>s.trim()).includes(tagF)) return false;
+    if(filtChips.length && !passFilter(r)) return false;
     if(query){ const nq=query.trim(); const d=query.replace(/\D/g,''); return (r.name||'').includes(nq)||(d&&(r.phone||'').replace(/\D/g,'').includes(d)); }
     return true;
   });
-  const sorted=[...filtered].sort((a,b)=>{
-    if(sort==='new') return (b.reg_date||'').localeCompare(a.reg_date||'');
-    if(sort==='old') return (a.reg_date||'').localeCompare(b.reg_date||'');
-    return (a.name||'').localeCompare(b.name||'','ko');
-  });
+  // 정렬 값
+  const sortVal=(r,k)=>{ const i=infoOf(r);
+    switch(k){
+      case 'status': return r.status||'';
+      case 'mno': return memberNo(r);
+      case 'gender': return r.gender||'';
+      case 'birth': return r.birth||'';
+      case 'age': return r.birth? -new Date(r.birth).getTime() : null;   // 나이순 = 생일 역순
+      case 'phone': return phoneDigits(r.phone);
+      case 'ms': return i.act[0]? i.act[0].product_name : '';
+      case 'remain': return i.remain;
+      case 'real': return i.real;
+      case 'end': return i.dleft;
+      case 'trainer': return trainersOf(r).join(', ');
+      case 'last': return lastOf(r);
+      case 'unpaid': return i.unpaid||null;
+      case 'paid': return r.cumulative_payment||null;
+      case 'reg': return r.reg_date||'';
+      case 'source': return r.source||'';
+      case 'purpose': return r.purpose||'';
+      case 'manager': return r.manager||'';
+      case 'tags': return r.tags||'';
+      default: return r.name||'';
+    } };
+  const sorted=[...filtered].sort((a,b)=>cmpVal(sortVal(a,sort.key),sortVal(b,sort.key),sort.dir)||(a.name||'').localeCompare(b.name||'','ko'));
   const shown = sorted.slice(0,300);
+  const sortPreset = sort.key==='name'&&sort.dir===1? 'name' : sort.key==='reg'&&sort.dir===-1? 'new' : sort.key==='reg'&&sort.dir===1? 'old' : 'col';
+  function pickPreset(v){ if(v==='name') setSort({key:'name',dir:1}); else if(v==='new') setSort({key:'reg',dir:-1}); else if(v==='old') setSort({key:'reg',dir:1}); }
+  function headSort(k){ if(k==='no') return; setSort(s=> s.key===k? {key:k,dir:-s.dir} : {key:k,dir:1}); }
+
+  const cols=MEMBER_COLS.filter(c=>c.fixed||colKeys.includes(c.k));
+  const gridCols='34px '+cols.map(c=>c.w).join(' ');
+  const minW=gridMinWidth(cols,34);
+  function applyCols(keys){ setColKeys(keys); saveCols(MCOL_KEY,keys); setColPick(false); }
+
+  const msLabel=m=>{ const t=m.total_count||0; return t? `${m.product_name} ${(m.remaining_count||0)+(booked[m.id]||0)}/${t}` : m.product_name; };
+  function cell(c,r,i){
+    const inf=infoOf(r);
+    switch(c.k){
+      case 'no': return <span className="muted">{i+1}</span>;
+      case 'status': return <span className={'badge b-'+(r.status||'')}>{r.status||'-'}</span>;
+      case 'name': return <><span className="name">{r.name}</span>
+        <small className="m-sub">{inf.act.length? msLabel(inf.act[0])+(inf.act.length>1?` 외 ${inf.act.length-1}`:'') : (r.phone||'')}</small></>;
+      case 'mno': return <span className="muted">{memberNo(r)||'-'}</span>;
+      case 'gender': return <span className="muted">{r.gender||'-'}</span>;
+      case 'birth': return <span className="muted">{r.birth||'-'}</span>;
+      case 'age': return <span className="muted">{age(r.birth)||'-'}</span>;
+      case 'phone': return <span className="phone">{r.phone||'-'}</span>;
+      case 'ms': return inf.act.length? <span className="ell" title={inf.act.map(msLabel).join('\n')}>
+          {inf.act[0].product_name}{inf.act[0].status==='홀딩'?<span className="mini 휴강">홀딩</span>:null}
+          {inf.act.length>1 && <span className="muted"> 외 {inf.act.length-1}</span>}</span> : <span className="muted">-</span>;
+      case 'remain': return inf.remain==null? <span className="muted">-</span> : <b style={inf.remain<=3?{color:'#e0a23c'}:undefined}>{inf.remain}</b>;
+      case 'real': return inf.real==null? <span className="muted">-</span> : <span style={inf.real<=0?{color:'#d98b7a'}:undefined}>{inf.real}</span>;
+      case 'end': return inf.end? <span>{fmtDateShort(inf.end)} <small className={'dd'+(inf.dleft<0?' over':inf.dleft<=14?' soon':'')}>{inf.dleft<0?`${-inf.dleft}일 지남`:inf.dleft===0?'오늘':`D-${inf.dleft}`}</small></span>
+        : <span className="muted">{inf.noEnd?'무기한':'-'}</span>;
+      case 'trainer': { const t=trainersOf(r); return t.length? <span className="ell" title={t.join(', ')}>{t.join(', ')}</span> : <span className="muted">-</span>; }
+      case 'last': { const l=lastOf(r), ago=daysAgo(l);
+        return l? <span>{fmtDateShort(l)} <small className={'dd'+(ago>=14?' soon':'')}>{ago===0?'오늘':`${ago}일 전`}</small></span> : <span className="muted">-</span>; }
+      case 'unpaid': return inf.unpaid>0? <span style={{color:'#d98b7a'}}>{inf.unpaid.toLocaleString()}</span> : <span className="muted">-</span>;
+      case 'paid': return r.cumulative_payment? <span>{r.cumulative_payment.toLocaleString()}</span> : <span className="muted">-</span>;
+      case 'reg': return <span className="muted" title={r.reg_date||''}>{r.reg_date?fmtDateShort(r.reg_date):'-'}</span>;
+      case 'source': return <span className="ell muted">{r.source||'-'}</span>;
+      case 'purpose': return <span className="ell muted">{r.purpose||'-'}</span>;
+      case 'manager': return <span className="ell muted">{r.manager||'-'}</span>;
+      case 'tags': return <span className="ell muted" title={r.tags||''}>{r.tags||'-'}</span>;
+      default: return null;
+    }
+  }
   function exportMembers(){
-    const rows=[['번호','상태','고객명','성별','나이','생년월일','연락처','주소','등록일','상담담당','태그','메모']];
-    sorted.forEach((r,i)=>rows.push([i+1,r.status||'',r.name||'',r.gender||'',age(r.birth)||'',r.birth||'',r.phone||'',r.address||'',fmtDate(r.reg_date),r.manager||'',r.tags||'',r.memo||'']));
-    downloadCSV('회원목록.csv',rows);
+    const out=[['번호','상태','고객명','회원번호','성별','나이','생년월일','연락처','보유 회원권','잔여','실잔여','만료일','담당강사','마지막 수업','미수금','누적 결제','등록일','방문경로','운동목적','이메일','주소','상담담당','태그','메모']];
+    sorted.forEach((r,i)=>{ const inf=infoOf(r);
+      out.push([i+1,r.status||'',r.name||'',memberNo(r),r.gender||'',age(r.birth)||'',r.birth||'',r.phone||'',
+        inf.act.map(msLabel).join(' / '),inf.remain==null?'':inf.remain,inf.real==null?'':inf.real,inf.end||(inf.noEnd?'무기한':''),
+        trainersOf(r).join(', '),lastOf(r)?ymd(new Date(lastOf(r))):'',inf.unpaid||'',r.cumulative_payment||'',r.reg_date||'',
+        r.source||'',r.purpose||'',r.email||'',r.address||'',r.manager||'',r.tags||'',r.memo||'']); });
+    downloadCSV('회원목록.csv',out);
   }
   function toggle(id){ setChecked(p=>{ const n=new Set(p); n.has(id)?n.delete(id):n.add(id); return n; }); }
   function toggleAll(){ setChecked(p=> p.size===shown.length? new Set() : new Set(shown.map(r=>r.id)) ); }
@@ -1237,7 +1650,15 @@ function MembersView({sb}){
     logAct(sb,'회원 삭제',`${ids.length}명: ${names}${ids.length>5?' 외':''}`);
     setChecked(new Set()); load();
   }
+  const arrow=k=> sort.key===k? (sort.dir===1?' ▲':' ▼') : '';
   return (<>
+    <div className="seg subseg">
+      <button className={sub==='members'?'on':''} onClick={()=>setSub('members')}>회원 목록</button>
+      <button className={sub==='passes'?'on':''} onClick={()=>setSub('passes')}>회원권 목록</button>
+    </div>
+    {sub==='passes' && <MembershipListView members={rows||[]} msAll={msAll} booked={booked} lastByMs={lastBy.ms}
+        loading={rows===null} onOpen={m=>setSel(m)}/>}
+    {sub==='members' && <>
     <div className="stats">
       <div className="stat"><div className="n">{counts.전체}</div><div className="l">전체 회원</div></div>
       <div className="stat"><div className="n" style={{color:'#7dc4a0'}}>{counts.활성}</div><div className="l">활성</div></div>
@@ -1257,43 +1678,191 @@ function MembersView({sb}){
         {q && <button className="btn ghost sm" title="지우기" onClick={()=>{ setQ(''); setQuery(''); }}>✕</button>}
         <button className="btn sm" onClick={()=>doSearch()}>🔍 검색</button>
       </div>
-      {query && <span className="muted" style={{fontSize:13}}>'{query}' 검색 {filtered.length}명</span>}
-      {allTags.length>0 && <select value={tagF} onChange={e=>setTagF(e.target.value)} style={{background:'var(--forest2)',border:'1px solid '+(tagF?'var(--brass)':'var(--line)'),borderRadius:10,padding:'9px 12px',color:tagF?'var(--brass)':'var(--cream)',fontSize:14,cursor:'pointer'}}>
+      <button className={'btn ghost sm'+(filtChips.length?' act':'')} onClick={()=>setFiltOpen(true)}>⚙ 필터{filtChips.length?` ${filtChips.length}`:''}</button>
+      {allTags.length>0 && <select className="barsel" value={tagF} onChange={e=>setTagF(e.target.value)} style={tagF?{borderColor:'var(--brass)',color:'var(--brass)'}:undefined}>
         <option value="">🏷 태그 전체</option>
         {allTags.map(t=><option key={t} value={t}>{t}</option>)}
       </select>}
-      <select value={sort} onChange={e=>setSort(e.target.value)} style={{background:'var(--forest2)',border:'1px solid var(--line)',borderRadius:10,padding:'9px 12px',color:'var(--cream)',fontSize:14,cursor:'pointer'}}>
+      <select className="barsel" value={sortPreset} onChange={e=>pickPreset(e.target.value)}>
         <option value="name">이름순</option><option value="new">최근 등록순</option><option value="old">오래된 등록순</option>
+        {sortPreset==='col' && <option value="col">{(MEMBER_COLS.find(c=>c.k===sort.key)||{}).label||'컬럼'} {sort.dir===1?'▲':'▼'}</option>}
       </select>
+      <button className="btn ghost sm only-desk" onClick={()=>setColPick(true)} title="표시할 컬럼 고르기">▦ 컬럼</button>
       <button className="btn ghost sm" onClick={exportMembers}>⤓ 엑셀</button>
       <button className="btn" onClick={()=>setAdding(true)}>＋ 회원 추가</button>
     </div>
+    {(filtChips.length>0||query) && <div className="fchips">
+      {query && <span className="muted" style={{fontSize:13}}>'{query}' 검색</span>}
+      {filtChips.map(([k,l])=><button key={k} className="fchip" onClick={()=>dropChip(k)} title="이 조건 지우기">{l} ✕</button>)}
+      <span className="muted" style={{fontSize:13}}>→ {filtered.length}명</span>
+      {filtChips.length>0 && <button className="link" style={{margin:0,fontSize:12}} onClick={()=>setFilt(EMPTY_FILTER)}>필터 초기화</button>}
+    </div>}
     {checked.size>0 && can('delete_members') && <div className="selbar">
       <span className="cnt">{checked.size}명 선택됨</span>
       <button className="btn danger sm" onClick={delChecked}>삭제</button>
       <button className="xbtn" onClick={()=>setChecked(new Set())} title="선택 해제">✕</button>
     </div>}
     {rows===null? <div className="empty">회원 불러오는 중...</div> :
-    <div className="list mlist-table" style={{marginBottom:40}}>
+    <div className="list xscroll" style={{marginBottom:40}}>
+      <div className="mlist-table" style={{'--cols':gridCols,'--minw':minW+'px'}}>
       <div className="row head">
-        <div><input type="checkbox" checked={shown.length>0&&checked.size===shown.length} onChange={toggleAll}/></div>
-        <div>번호</div><div>상태</div><div>고객명</div><div>성별</div><div>나이</div><div>연락처</div>
+        <div className="c-chk"><input type="checkbox" checked={shown.length>0&&checked.size===shown.length} onChange={toggleAll}/></div>
+        {cols.map(c=><div key={c.k} className={'c-'+c.k+(c.num?' num':'')+(c.k!=='no'?' sortable':'')} onClick={()=>headSort(c.k)}
+          title={c.k!=='no'?'눌러서 정렬':undefined}>{c.label}{arrow(c.k)}</div>)}
       </div>
       {shown.length===0? <div className="empty">검색 결과가 없습니다.</div> :
         shown.map((r,i)=>(
           <div className="row" key={r.id} onClick={()=>setSel(r)}>
-            <div onClick={e=>e.stopPropagation()}><input type="checkbox" checked={checked.has(r.id)} onChange={()=>toggle(r.id)}/></div>
-            <div className="muted">{i+1}</div>
-            <div><span className={'badge b-'+(r.status||'')}>{r.status||'-'}</span></div>
-            <div className="name">{r.name}</div>
-            <div className="muted">{r.gender||'-'}</div>
-            <div className="muted">{age(r.birth)||'-'}</div>
-            <div className="phone">{r.phone||'-'}</div>
+            <div className="c-chk" onClick={e=>e.stopPropagation()}><input type="checkbox" checked={checked.has(r.id)} onChange={()=>toggle(r.id)}/></div>
+            {cols.map(c=><div key={c.k} className={'c-'+c.k+(c.num?' num':'')}>{cell(c,r,i)}</div>)}
           </div>))}
-      {filtered.length>300 && <div className="empty">상위 300명만 표시 중 (검색으로 좁혀보세요) · 전체 {filtered.length}명</div>}
+      {filtered.length>300 && <div className="empty">상위 300명만 표시 중 (검색·필터로 좁혀보세요) · 전체 {filtered.length}명</div>}
+      </div>
     </div>}
+    </>}
     {sel && <Detail sb={sb} member={sel} onClose={()=>{setSel(null);load();}}/>}
     {adding && <AddMemberModal sb={sb} onClose={()=>setAdding(false)} onSaved={(m)=>{setAdding(false);load();setSel(m);}}/>}
+    {filtOpen && <MemberFilterModal value={filt} trainers={trainerOpts} sources={sourceOpts} purposes={purposeOpts}
+        onClose={()=>setFiltOpen(false)} onApply={f=>{ setFilt(f); setFiltOpen(false); }}/>}
+    {colPick && <ColumnPickModal cols={MEMBER_COLS} value={colKeys} defaults={MEMBER_COLS_DEFAULT} onClose={()=>setColPick(false)} onApply={applyCols}/>}
+  </>);
+}
+
+// ---------- 회원권 목록 (회원 구분 없이 전체) ----------
+// 브로제이 '예약권 목록'에 해당한다. 회차·만료일을 회원 상세마다 들어가지 않고 한 표에서 점검한다.
+//   잔여   = 아직 안 한 수업 전부 (실잔여 + 예약)
+//   실잔여 = 앞으로 더 예약할 수 있는 횟수 (= remaining_count, 예약할 때 이미 깎인 값)
+const MS_COLS=[
+  {k:'status',label:'상태',w:'62px',fixed:true},
+  {k:'product',label:'회원권',w:'minmax(150px,1.5fr)',fixed:true},
+  {k:'member',label:'고객명',w:'minmax(84px,1fr)',fixed:true},
+  {k:'phone',label:'연락처',w:'116px'},
+  {k:'cat',label:'종류',w:'68px'},
+  {k:'trainer',label:'담당강사',w:'84px'},
+  {k:'total',label:'총',w:'44px',num:true},
+  {k:'remain',label:'잔여',w:'52px',num:true},
+  {k:'real',label:'실잔여',w:'60px',num:true},
+  {k:'booked',label:'예약',w:'46px',num:true},
+  {k:'start',label:'시작일',w:'70px'},
+  {k:'end',label:'만료일',w:'104px'},
+  {k:'last',label:'마지막 수업',w:'104px'},
+  {k:'unpaid',label:'미수금',w:'84px',num:true},
+  {k:'price',label:'판매 금액',w:'92px',num:true},
+];
+// 15칸을 다 펴면 보통 화면(1400px)에서 옆으로 넘친다 → 회차·기간 점검에 쓰는 칸만 기본으로 켠다
+const MS_COLS_DEFAULT=['trainer','total','remain','real','booked','end','last','unpaid'];
+const MSCOL_KEY='gl_ms_cols';
+function MembershipListView({members,msAll,booked,lastByMs,loading,onOpen}){
+  const [tab,setTab]=useState('활성');
+  const [colKeys,setColKeys]=useState(()=>loadCols(MSCOL_KEY,MS_COLS,MS_COLS_DEFAULT));
+  const [colPick,setColPick]=useState(false);
+  const cols=MS_COLS.filter(c=>c.fixed||colKeys.includes(c.k));
+  const [q,setQ]=useState('');
+  const [trainerF,setTrainerF]=useState(''),[catF,setCatF]=useState(''),[remainLe,setRemainLe]=useState('');
+  const [sort,setSort]=useState({key:'member',dir:1});
+  const mById=useMemo(()=>{ const o={}; members.forEach(m=>o[m.id]=m); return o; },[members]);
+  const rows=useMemo(()=>msAll.map(m=>{ const t=m.total_count||0, bk=booked[m.id]||0, r=m.remaining_count||0;
+    const dl=daysLeft(m.end_date);
+    const soon=m.status==='활성' && ((dl!=null&&dl>=0&&dl<=14) || (t>0 && r+bk<=3));
+    return {m,mem:mById[m.member_id]||null,t,bk,real:t?r:null,remain:t?r+bk:null,dl,soon,last:lastByMs[m.id]||null}; }),[msAll,booked,mById,lastByMs]);
+  const counts=useMemo(()=>{ const c={전체:rows.length,활성:0,임박:0,홀딩:0,만료:0};
+    rows.forEach(x=>{ if(c[x.m.status]!==undefined) c[x.m.status]++; if(x.soon) c.임박++; }); return c; },[rows]);
+  const uniq=arr=>[...new Set(arr.map(s=>String(s||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ko'));
+  const trainerOpts=useMemo(()=>uniq(msAll.map(m=>m.trainer)),[msAll]);
+  const catOpts=useMemo(()=>uniq(msAll.map(m=>m.category)),[msAll]);
+  const nq=q.trim(), dq=q.replace(/\D/g,'');
+  const filtered=rows.filter(x=>{
+    if(tab==='임박'){ if(!x.soon) return false; } else if(tab!=='전체' && x.m.status!==tab) return false;
+    if(trainerF && String(x.m.trainer||'').trim()!==trainerF) return false;
+    if(catF && String(x.m.category||'').trim()!==catF) return false;
+    if(remainLe!=='' && !(x.remain!=null && x.remain<=Number(remainLe))) return false;
+    if(nq){ const nm=x.mem? x.mem.name||'' : ''; const ph=x.mem? phoneDigits(x.mem.phone) : '';
+      if(!(nm.includes(nq) || (x.m.product_name||'').includes(nq) || (dq&&ph.includes(dq)))) return false; }
+    return true; });
+  const sortVal=(x,k)=>{ switch(k){
+    case 'status': return x.m.status||''; case 'product': return x.m.product_name||'';
+    case 'phone': return x.mem? phoneDigits(x.mem.phone) : ''; case 'cat': return x.m.category||'';
+    case 'trainer': return x.m.trainer||''; case 'total': return x.t||null; case 'remain': return x.remain;
+    case 'real': return x.real; case 'booked': return x.bk||null; case 'start': return x.m.start_date||'';
+    case 'end': return x.dl; case 'last': return x.last; case 'unpaid': return x.m.unpaid||null; case 'price': return x.m.price||null;
+    default: return x.mem? x.mem.name||'' : ''; } };
+  const sorted=[...filtered].sort((a,b)=>cmpVal(sortVal(a,sort.key),sortVal(b,sort.key),sort.dir)||(a.m.id-b.m.id));
+  const shown=sorted.slice(0,300);
+  const headSort=k=>setSort(s=> s.key===k? {key:k,dir:-s.dir} : {key:k,dir:1});
+  const arrow=k=> sort.key===k? (sort.dir===1?' ▲':' ▼') : '';
+  const gridCols=cols.map(c=>c.w).join(' ');
+  const minW=gridMinWidth(cols,0);
+  function exportCSV(){
+    const out=[['상태','회원권','고객명','연락처','종류','담당강사','총','잔여','실잔여','예약','시작일','만료일','남은 일수','마지막 수업','미수금','판매 금액']];
+    sorted.forEach(x=>out.push([x.m.status||'',x.m.product_name||'',x.mem?x.mem.name:'',x.mem?x.mem.phone||'':'',x.m.category||'',x.m.trainer||'',
+      x.t||'',x.remain==null?'':x.remain,x.real==null?'':x.real,x.bk||'',x.m.start_date||'',x.m.end_date||'무기한',x.dl==null?'':x.dl,
+      x.last?ymd(new Date(x.last)):'',x.m.unpaid||'',x.m.price||'']));
+    downloadCSV('회원권목록.csv',out);
+  }
+  function cell(c,x){
+    const m=x.m;
+    switch(c.k){
+      case 'status': return <span className={'badge b-'+(x.soon?'임박':(m.status||''))}>{x.soon?'임박':(m.status||'-')}</span>;
+      case 'product': return <><span className="name ell" title={m.product_name}>{m.product_name}</span>
+        <small className="m-sub">{x.mem?x.mem.name:'(회원 없음)'}{m.trainer?` · ${m.trainer}`:''}{m.end_date?` · ~${fmtDate(m.end_date)}`:''}</small></>;
+      case 'member': return <span className="ell">{x.mem? x.mem.name : <span className="muted">(회원 없음)</span>}</span>;
+      case 'phone': return <span className="phone">{x.mem&&x.mem.phone||'-'}</span>;
+      case 'cat': return <span className="muted">{m.category||'-'}</span>;
+      case 'trainer': return m.trainer? <span className="ell">{m.trainer}</span>
+        : x.t&&m.status==='활성'? <span style={{color:'#d98b7a'}} title="담당강사가 없으면 이 회원권으로 예약할 수 없습니다">미지정</span> : <span className="muted">-</span>;
+      case 'total': return x.t? <span className="muted">{x.t}</span> : <span className="muted">-</span>;
+      case 'remain': return x.remain==null? <span className="muted">-</span> : <b style={x.remain<=3&&m.status==='활성'?{color:'#e0a23c'}:undefined}>{x.remain}</b>;
+      case 'real': return x.real==null? <span className="muted">-</span> : <span style={x.real<=0&&m.status==='활성'?{color:'#d98b7a'}:undefined}>{x.real}</span>;
+      case 'booked': return x.bk? <span style={{color:'var(--brass)'}}>{x.bk}</span> : <span className="muted">-</span>;
+      case 'start': return <span className="muted" title={m.start_date||''}>{m.start_date?fmtDateShort(m.start_date):'-'}</span>;
+      case 'end': return m.end_date? <span title={m.end_date}>{fmtDateShort(m.end_date)} <small className={'dd'+(x.dl<0?' over':x.dl<=14?' soon':'')}>{x.dl<0?`${-x.dl}일 지남`:x.dl===0?'오늘':`D-${x.dl}`}</small></span> : <span className="muted">무기한</span>;
+      case 'last': { const ago=daysAgo(x.last);
+        return x.last? <span>{fmtDateShort(x.last)} <small className={'dd'+(ago>=14&&m.status==='활성'?' soon':'')}>{ago===0?'오늘':`${ago}일 전`}</small></span> : <span className="muted">-</span>; }
+      case 'unpaid': return m.unpaid>0? <span style={{color:'#d98b7a'}}>{m.unpaid.toLocaleString()}</span> : <span className="muted">-</span>;
+      case 'price': return m.price? <span>{m.price.toLocaleString()}</span> : <span className="muted">-</span>;
+      default: return null;
+    }
+  }
+  return (<>
+    <div className="bar" style={{marginTop:14}}>
+      <div className="tabs">
+        {['전체','활성','임박','홀딩','만료'].map(t=>(
+          <button key={t} className={'tab'+(tab===t?' on':'')} onClick={()=>setTab(t)}
+            title={t==='임박'?'활성 회원권 중 만료 14일 이내이거나 잔여 3회 이하':undefined}>{t} {counts[t]}</button>))}
+      </div>
+      <div className="searchbox">
+        <input className="search" placeholder="이름 · 회원권명 · 전화번호" value={q} onChange={e=>setQ(e.target.value)}/>
+        {q && <button className="btn ghost sm" title="지우기" onClick={()=>setQ('')}>✕</button>}
+      </div>
+      <select className="barsel" value={trainerF} onChange={e=>setTrainerF(e.target.value)} style={trainerF?{borderColor:'var(--brass)',color:'var(--brass)'}:undefined}>
+        <option value="">담당강사 전체</option>{trainerOpts.map(t=><option key={t} value={t}>{t}</option>)}</select>
+      {catOpts.length>1 && <select className="barsel" value={catF} onChange={e=>setCatF(e.target.value)} style={catF?{borderColor:'var(--brass)',color:'var(--brass)'}:undefined}>
+        <option value="">종류 전체</option>{catOpts.map(t=><option key={t} value={t}>{t}</option>)}</select>}
+      <label className="barnum" title="잔여(예약 포함)가 이 횟수 이하인 회원권만">잔여
+        <input inputMode="numeric" value={remainLe} onChange={e=>setRemainLe(e.target.value.replace(/\D/g,'').slice(0,3))} placeholder="-"/>회 이하</label>
+      <button className="btn ghost sm only-desk" onClick={()=>setColPick(true)} title="표시할 컬럼 고르기">▦ 컬럼</button>
+      <button className="btn ghost sm" onClick={exportCSV}>⤓ 엑셀</button>
+    </div>
+    <div className="fchips">
+      <span className="muted" style={{fontSize:13}}>{filtered.length}건</span>
+      <span className="muted" style={{fontSize:12}}>· <b style={{color:'var(--cream)'}}>잔여</b> = 아직 안 한 수업 전부 · <b style={{color:'var(--cream)'}}>실잔여</b> = 더 예약할 수 있는 횟수 (잔여 − 예약)</span>
+    </div>
+    {loading? <div className="empty">회원권 불러오는 중...</div> :
+    <div className="list xscroll" style={{marginBottom:40}}>
+      <div className="mslist" style={{'--cols':gridCols,'--minw':minW+'px'}}>
+        <div className="row head">
+          {cols.map(c=><div key={c.k} className={'c-'+c.k+(c.num?' num':'')+' sortable'} onClick={()=>headSort(c.k)} title="눌러서 정렬">{c.label}{arrow(c.k)}</div>)}
+        </div>
+        {shown.length===0? <div className="empty">해당하는 회원권이 없습니다.</div> :
+          shown.map(x=>(
+            <div className="row" key={x.m.id} onClick={()=>{ if(x.mem) onOpen(x.mem); }} title={x.mem?'눌러서 회원 상세 열기':undefined}>
+              {cols.map(c=><div key={c.k} className={'c-'+c.k+(c.num?' num':'')}>{cell(c,x)}</div>)}
+            </div>))}
+        {filtered.length>300 && <div className="empty">상위 300건만 표시 중 (검색·필터로 좁혀보세요) · 전체 {filtered.length}건</div>}
+      </div>
+    </div>}
+    {colPick && <ColumnPickModal cols={MS_COLS} value={colKeys} defaults={MS_COLS_DEFAULT} onClose={()=>setColPick(false)}
+        onApply={keys=>{ setColKeys(keys); saveCols(MSCOL_KEY,keys); setColPick(false); }}/>}
   </>);
 }
 
@@ -1308,10 +1877,13 @@ function AddMemberModal({sb,onClose,onSaved,initName}){
   const [address,setAddress]=useState('');
   const [manager,setManager]=useState('');
   const [memo,setMemo]=useState('');
+  // 브로제이 대조로 추가한 항목. 회원번호는 비워두면 전화 뒷 4자리로 표시된다.
+  const [no,setNo]=useState(''),[source,setSource]=useState(''),[purpose,setPurpose]=useState(''),[email,setEmail]=useState('');
   const [consentPriv,setConsentPriv]=useState(false),[consentMkt,setConsentMkt]=useState(false);
   const [busy,setBusy]=useState(false),[err,setErr]=useState('');
   async function save(){
     if(!name.trim()) return setErr('이름을 입력하세요');
+    if(email.trim() && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email.trim())) return setErr('이메일 형식을 확인해주세요');
     setBusy(true); setErr('');
     // 중복 회원 방지: 같은 전화번호가 이미 있으면 경고(그래도 등록할지 확인)
     const pd=phoneDigits(phone);
@@ -1321,15 +1893,18 @@ function AddMemberModal({sb,onClose,onSaved,initName}){
       const hit=(dups||[]).find(m=>phoneDigits(m.phone)===pd);
       if(hit && !confirm(`이미 '${hit.name}' 회원이 이 번호(${hit.phone||''})로 등록되어 있습니다.\n\n동명이인이 아니라면 중복일 수 있어요.\n그래도 새로 등록할까요?`)){ setBusy(false); return; }
     }
-    const {data,error}=await sb.from('members').insert({
+    const payload={
       name:name.trim(), phone:phone.trim()||null, gender:gender||null, birth:birth||null,
       address:address.trim()||null, manager:manager.trim()||null, memo:memo.trim()||null,
+      member_no:no.trim()||null, source:source.trim()||null, purpose:purpose.trim()||null, email:email.trim()||null,
       status:'미등록', reg_date:ymd(new Date()),
       assigned_trainer: role==='master'? null : (myName||null),  // 프리랜서가 추가 시 자기 담당(RLS 유지)
       consent_at: consentPriv? new Date().toISOString() : null, consent_marketing: consentMkt
-    }).select().single();
+    };
+    const {data,error}=await writeSafe('members',p=>sb.from('members').insert(p).select().single(),payload);
     setBusy(false);
     if(error){ setErr('저장 실패: '+error.message); return; }
+    warnDropped('members',payload);
     logAct(sb,'회원 등록',name.trim());
     onSaved(data);
   }
@@ -1344,6 +1919,15 @@ function AddMemberModal({sb,onClose,onSaved,initName}){
       <div className="row2">
         <div className="field" style={{flex:1}}><label>전화번호</label><input value={phone} onChange={e=>setPhone(fmtPhone(e.target.value))} placeholder="010-0000-0000" inputMode="numeric"/></div>
         <div className="field" style={{flex:1}}><label>생년월일</label><input type="date" value={birth} onChange={e=>setBirth(e.target.value)}/></div>
+      </div>
+      <div className="row2">
+        <div className="field" style={{width:120}}><label>회원번호</label>
+          <input value={no} onChange={e=>setNo(e.target.value.replace(/[^\w-]/g,'').slice(0,12))} placeholder={phoneDigits(phone).slice(-4)||'자동'} inputMode="numeric"/></div>
+        <div className="field" style={{flex:1}}><label>이메일</label><input type="email" value={email} onChange={e=>setEmail(e.target.value)} placeholder="선택"/></div>
+      </div>
+      <div className="row2">
+        <OptInput label="방문경로" value={source} onChange={setSource} options={SOURCE_OPTS} listId="add-source"/>
+        <OptInput label="운동목적" value={purpose} onChange={setPurpose} options={PURPOSE_OPTS} listId="add-purpose"/>
       </div>
       <div className="field"><label>주소</label><input value={address} onChange={e=>setAddress(e.target.value)} placeholder="주소"/></div>
       <div className="field"><label>상담 담당</label><input value={manager} onChange={e=>setManager(e.target.value)} placeholder="담당자 이름"/></div>
@@ -1360,14 +1944,17 @@ function AddMemberModal({sb,onClose,onSaved,initName}){
 }
 
 // ---------- 예약 모달 ----------
-function BookingModal({sb,date,members,trainers,onClose,onSaved}){
+function BookingModal({sb,date,start:initStart,members,trainers,onClose,onSaved}){
   useEsc(onClose);
   const [dt,setDt]=useState(date); // 예약 날짜 (모달 내 변경 가능)
   const [mode,setMode]=useState('member'); // member | guest
   const [q,setQ]=useState(''),[sel,setSel]=useState(null);
-  const [start,setStart]=useState('10:00'),[dur,setDur]=useState('50'),[trainer,setTrainer]=useState('');
+  // initStart: PC 일(강사별) 격자에서 빈 칸을 누르면 그 시각이 넘어온다
+  const [start,setStart]=useState(initStart||'10:00'),[dur,setDur]=useState('50'),[trainer,setTrainer]=useState('');
   const [name,setName]=useState('1:1 PT'),[guestName,setGuestName]=useState(''),[err,setErr]=useState(''),[busy,setBusy]=useState(false);
+  const [title,setTitle]=useState('');   // 일정명(선택) — 수업명과 따로 저장한다
   const [mss,setMss]=useState([]),[msId,setMsId]=useState(null);
+  const [booked,setBooked]=useState({});  // 회원권별 예약(아직 안 한 수업) 건수 → 잔여/예약가능 구분 표시
   const selectedMs=msId?mss.find(x=>String(x.id)===String(msId)):null;
   const assignedTrainer=selectedMs?String(selectedMs.trainer||'').trim():'';
   const cands = q? members.filter(m=>{ const digits=q.replace(/\D/g,'');
@@ -1378,6 +1965,9 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
     const list=data||[];
     setMss(list); setMsId(list[0]? list[0].id : null);
     setTrainer(list[0]?String(list[0].trainer||'').trim():'');
+    if(list[0]) setName(defaultLessonType(list[0]));
+    const bk=await sb.from('lessons').select('membership_id').eq('member_id',m.id).eq('status','예약').not('membership_id','is',null);
+    const o={}; (bk.data||[]).forEach(l=>{ o[l.membership_id]=(o[l.membership_id]||0)+1; }); setBooked(o);
   }
   function times(){ const startISO=new Date(`${dt}T${start}:00+09:00`); const endISO=new Date(startISO.getTime()+(parseInt(dur)||50)*60000); return [startISO.toISOString(), endISO.toISOString()]; }
   async function conflictOK(s,e){
@@ -1430,9 +2020,10 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
     }
     // 일괄 삽입
     const rows=[]; for(let i=0;i<n;i++){ const di=nthDate(i); const s=new Date(`${di}T${start}:00+09:00`).toISOString(); const e=new Date(new Date(s).getTime()+(parseInt(dur)||50)*60000).toISOString();
-      rows.push({member_id:sel.id, membership_id:msId, start_at:s, end_at:e, lesson_name:name, trainer:fixedTrainer, status:'예약'}); }
-    const {error}=await sb.from('lessons').insert(rows);
+      rows.push({member_id:sel.id, membership_id:msId, start_at:s, end_at:e, lesson_name:name, title:title.trim()||null, category:lessonCategory(name), trainer:fixedTrainer, status:'예약'}); }
+    const {error}=await writeSafe('lessons',p=>sb.from('lessons').insert(p),rows);
     if(error){ setBusy(false); return setErr('저장 실패: '+error.message); }
+    warnDropped('lessons',rows);
     // ★차감 실패를 삼키면 "예약은 있는데 회차는 안 깎인" 상태가 소리 없이 생긴다.
     //   예약 저장은 이미 끝났으므로 되돌리지 않고, 몇 건이 실패했는지 반드시 알린다.
     //   (2026-07 이중차감의 거울상 — 그때는 두 번 깎였고 이건 안 깎이는 쪽이다)
@@ -1444,7 +2035,7 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
         deducted++;
       }
     }
-    logAct(sb,'수업 예약',`${sel.name} · ${name} · ${dt} ${start}${n>1?` (매주 ×${n}회, ~${nthDate(n-1)})`:''}${msId&&deducted<n?` ⚠차감 ${deducted}/${n}`:''}`);
+    logAct(sb,'수업 예약',`${sel.name} · ${name}${title.trim()?` (${title.trim()})`:''} · ${dt} ${start}${n>1?` (매주 ×${n}회, ~${nthDate(n-1)})`:''}${msId&&deducted<n?` ⚠차감 ${deducted}/${n}`:''}`);
     setBusy(false);
     if(msId && deducted<n){
       alert(`⚠️ 예약 ${n}건은 저장됐지만 회차 차감이 ${n-deducted}건 실패했습니다.${cFail?`\n(${cFail})`:''}\n\n잔여 회차가 실제보다 많게 표시됩니다.\n회원 상세 → 회원권 수정에서 잔여 회차를 직접 맞춰주세요.`);
@@ -1454,10 +2045,20 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
   async function saveGuest(){
     setBusy(true); const [s,e]=times();
     if(!await conflictOK(s,e)){ setBusy(false); return; }
-    const ln = guestName.trim()? `${name} - ${guestName.trim()}` : name;
-    const {error}=await sb.from('lessons').insert({member_id:null, membership_id:null, start_at:s, end_at:e, lesson_name:ln, trainer:trainer||null, status:'예약'});
+    // ★예전엔 `OT - 홍길동`처럼 수업명에 이름을 붙여 넣었다 → 수업 종류 통계가 이름 수만큼 쪼개졌다.
+    //   수업명은 종류만, 이름·메모는 일정명(title)에 둔다.
+    const gn=guestName.trim();
+    // 일정명 칸이 아직 없으면(SQL 미실행) 이름이 통째로 사라진다 → 그동안만 예전 방식으로 수업명에 붙인다
+    const legacy=MISSING_COLS.has('lessons.title');
+    const row={member_id:null, membership_id:null, start_at:s, end_at:e, lesson_name:(legacy&&gn)?`${name} - ${gn}`:name, title:gn||null, trainer:trainer||null, status:'예약'};
+    let {error}=await writeSafe('lessons',p=>sb.from('lessons').insert(p),row);
+    if(!error && gn && !legacy && MISSING_COLS.has('lessons.title')){   // 칸이 없다는 걸 이번 저장에서 처음 안 경우
+      let q2=sb.from('lessons').update({lesson_name:`${name} - ${gn}`}).is('member_id',null).eq('start_at',s).eq('lesson_name',name).eq('status','예약');
+      q2 = trainer? q2.eq('trainer',trainer) : q2.is('trainer',null);
+      const r2=await q2; error=r2.error;
+    }
     setBusy(false); if(error){ setErr('저장 실패: '+error.message); return; }
-    logAct(sb,'수업 예약(비회원)',`${ln} · ${dt} ${start}`);
+    logAct(sb,'수업 예약(비회원)',`${name}${gn?` (${gn})`:''} · ${dt} ${start}`);
     onSaved();
   }
   return (
@@ -1480,14 +2081,17 @@ function BookingModal({sb,date,members,trainers,onClose,onSaved}){
         <div className="field"><label>차감할 회원권 <span className="muted">(예약 시 1회 즉시 차감)</span></label>
           {mss.length===0? <div className="muted" style={{fontSize:13}}>활성 회원권이 없습니다. 회원 상세에서 레슨/회원권을 먼저 등록하세요.</div> :
             <>
-              <select value={msId||''} onChange={e=>{ const id=e.target.value?parseInt(e.target.value):null; const m=mss.find(x=>String(x.id)===String(id)); setMsId(id); setTrainer(m?String(m.trainer||'').trim():''); }}>
-                {mss.map(m=><option key={m.id} value={m.id}>{m.product_name} · 담당 {m.trainer||'미지정'} · 잔여 {m.remaining_count}/{m.total_count}</option>)}
+              <select value={msId||''} onChange={e=>{ const id=e.target.value?parseInt(e.target.value):null; const m=mss.find(x=>String(x.id)===String(id)); setMsId(id); setTrainer(m?String(m.trainer||'').trim():''); if(m) setName(defaultLessonType(m)); }}>
+                {mss.map(m=>{ const bk=booked[m.id]||0;
+                  return <option key={m.id} value={m.id}>{m.product_name} · 담당 {m.trainer||'미지정'} · 잔여 {(m.remaining_count||0)+bk}/{m.total_count}{bk?` (예약 ${bk} · 예약가능 ${m.remaining_count})`:''}</option>; })}
               </select>
               <div className="muted" style={{fontSize:12,marginTop:5}}>선택한 회원권의 담당강사만 예약할 수 있습니다.</div>
             </>}</div>
-        <div className="field"><label>수업명</label>
-          <div className="seg">{['1:1 PT','OT','상담'].map(t=>(
+        <div className="field"><label>수업명 <span className="muted">(종류)</span></label>
+          <div className="seg seg-wrap">{LESSON_TYPES.filter(t=>t!=='기타').map(t=>(
             <button key={t} type="button" className={name===t?'on':''} onClick={()=>setName(t)}>{t}</button>))}</div></div>
+        <div className="field"><label>일정명 <span className="muted">(선택 · 덧붙일 말)</span></label>
+          <input value={title} onChange={e=>setTitle(e.target.value.slice(0,40))} placeholder="예: 보강, 체험, 재활 체크"/></div>
         <div className="row2">
           <div className="field" style={{flex:1}}><label>시작 시간</label><input type="time" value={start} onChange={e=>setStart(e.target.value)}/></div>
           <div className="field" style={{width:100}}><label>길이(분)</label><input type="number" value={dur} onChange={e=>setDur(e.target.value)}/></div>
@@ -1638,9 +2242,6 @@ function ScheduleImportModal({sb,members,trainers,handoff,onClose,onSaved}){
     return {status:'missing_member',message:'CRM 회원 목록에서 찾지 못했습니다.'};
   }
 
-  function lessonCategory(name){
-    return /대표/.test(name) ? '대표PT' : /1:1/.test(name) ? '1:1PT' : 'PT';
-  }
   function normTrainer(v){ return String(v||'').trim(); }
   // ★수업명 칸에 회원 이름이 들어오는 오염을 걸러낸다.
   //   2026-08-01 실측: 7월 수업 283건 중 52건이 '주영님'·'희원님'·'구민주님'처럼
@@ -1683,8 +2284,11 @@ function ScheduleImportModal({sb,members,trainers,handoff,onClose,onSaved}){
       const date=String(row.date || row.dateISO || '').trim();
       const start=String(row.start || row.time || row.startTime || '').trim();
       const rowLessonRaw=String(row.lessonType || row.lessonName || row.lesson_name || defaultLesson).trim();
-      const rowLesson=cleanLessonName(rowLessonRaw,memberName,defaultLesson);
-      const lessonFixed=rowLesson!==rowLessonRaw;   // 정규화했으면 결과 표에 표시한다(조용히 바꾸지 않음)
+      const cleaned=cleanLessonName(rowLessonRaw,memberName,defaultLesson);
+      // 목록에 있는 수업명이면 표기만 맞춘다('대표PT'→'대표 PT'). 목록에 없는 말('PT' 등)은 그대로 둔다 —
+      // 기본 수업명으로 바꿔 버리면 1:1 수업이 '대표 PT'로 잘못 찍힐 수 있다. 회원 이름 오염은 위 cleanLessonName이 막는다.
+      const rowLesson=canonLessonType(cleaned,[defaultLesson])||cleaned||defaultLesson;
+      const lessonFixed=cleaned!==rowLessonRaw;   // 정규화했으면 결과 표에 표시한다(조용히 바꾸지 않음)
       // 이 행만 강사를 바꾼 경우(강사불일치를 그 자리에서 푸는 용도)가 최우선
       const rowTrainerName=String(rowTrainer[idx] || row.trainer || defaultTrainer).trim();
       const rowDuration=parseInt(row.brojDurationMinutes || row.durationMinutes || defaultDuration)||60;
@@ -1835,7 +2439,7 @@ function ScheduleImportModal({sb,members,trainers,handoff,onClose,onSaved}){
         trainer:item.trainer||null,
         status:'예약'
       };
-      const {error}=await sb.from('lessons').insert(payload);
+      const {error}=await writeSafe('lessons',p=>sb.from('lessons').insert(p),payload);
       const pos=next.findIndex(x=>x.idx===item.idx);
       if(error){
         summary.error++;
@@ -1999,7 +2603,7 @@ function DayModal({date,items,memberName,chipStyle,onClose,onCtx,onMember}){
           <button key={l.id} className={'chip '+l.status} style={{...(chipStyle?chipStyle(l):null),fontSize:13,padding:'9px 11px'}}
             onClick={()=>{ if(l.member_id && onMember) onMember(l); }}
             onContextMenu={e=>{e.preventDefault(); onCtx({x:e.clientX,y:e.clientY,l});}}>
-            {hmRange(l)} · {l.member_id?memberName(l.member_id)+' · ':''}{l.lesson_name} <span className={'mini '+l.status}>{l.status}</span>
+            {hmRange(l)} · {l.member_id?memberName(l.member_id)+' · ':''}{lessonText(l)} <span className={'mini '+l.status}>{l.status}</span>
           </button>))}
       </div>
     </div></div>
@@ -2013,7 +2617,7 @@ function NoshowModal({lesson,onClose,onConfirm}){
   return (
     <div className="modal-ov top" onClick={onClose}><div className="modal" onClick={e=>e.stopPropagation()}>
       <div className="mhead"><h3>노쇼 처리</h3><button className="xbtn" onClick={onClose}>✕</button></div>
-      <p className="muted" style={{fontSize:13,marginTop:0}}>{lesson.lesson_name} · {fmtDT(lesson.start_at)} · 차감은 유지됩니다.</p>
+      <p className="muted" style={{fontSize:13,marginTop:0}}>{lessonText(lesson)} · {fmtDT(lesson.start_at)} · 차감은 유지됩니다.</p>
       <div className="field"><label>노쇼 사유</label>
         <input autoFocus value={reason} onChange={e=>setReason(e.target.value)} placeholder="예: 연락 없이 불참"/></div>
       <button className="btn" onClick={()=>onConfirm(reason)}>노쇼 처리</button>
@@ -2049,8 +2653,8 @@ function DayScheduleModal({date,items,memberName,trainerColors,onPick,onAdd,onCl
               <span className="dsm-time">{hm(l.start_at)}<i>{l.end_at?hm(l.end_at):''}</i></span>
               <span className="dsm-bar" style={{background:tc}}/>
               <span className="dsm-body">
-                <b>{l.member_id?memberName(l.member_id):(l.lesson_name||'수업')}</b>
-                <small>{l.lesson_name} · {l.trainer||'강사 미지정'}{l.noshow_reason?` · 노쇼: ${l.noshow_reason}`:''}</small>
+                <b>{l.member_id?memberName(l.member_id):(l.title||l.lesson_name||'수업')}</b>
+                <small>{lessonText(l)} · {l.trainer||'강사 미지정'}{l.noshow_reason?` · 노쇼: ${l.noshow_reason}`:''}</small>
               </span>
               <span className={'mini '+l.status}>{l.status}</span>
             </button>); })}
@@ -2074,7 +2678,7 @@ function DeleteLessonModal({lesson,memberName,onClose,onConfirm}){
   return (<div className="modal-ov top" onClick={onClose}><div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
     <div className="mhead"><h3>수업 삭제</h3><button className="xbtn" onClick={onClose}>✕</button></div>
     <p className="muted" style={{fontSize:13,marginTop:0}}>
-      {who?who+' · ':''}{lesson.lesson_name} · {lesson.trainer||'강사 미지정'}<br/>
+      {who?who+' · ':''}{lessonText(lesson)} · {lesson.trainer||'강사 미지정'}<br/>
       <span style={{fontSize:12}}>{fmtDT(lesson.start_at)} · 현재 {lesson.status}</span>
     </p>
     {hasMs? <>
@@ -2112,6 +2716,11 @@ function EditLessonTimeModal({sb,lesson,memberName,onClose,onSaved}){
   const [dur,setDur]=useState(String(curDur));
   const [busy,setBusy]=useState(false),[err,setErr]=useState('');
   const who=lesson.member_id? (memberName(lesson.member_id)+' · ') : '';
+  // 수업명(종류)·일정명도 여기서 고친다 — 수업명 칸에 이름이 들어간 예전 기록을 바로잡는 통로.
+  const [lname,setLname]=useState(lesson.lesson_name||'');
+  const [ltitle,setLtitle]=useState(lesson.title||'');
+  const typeOpts=LESSON_TYPES.includes(lesson.lesson_name)||!lesson.lesson_name? LESSON_TYPES : [lesson.lesson_name,...LESSON_TYPES];
+  const nameChanged = lname!==(lesson.lesson_name||'') || ltitle.trim()!==(lesson.title||'');
 
   function calc(){
     const m=String(start||'').match(/^(\d{1,2}):(\d{2})$/);
@@ -2122,16 +2731,20 @@ function EditLessonTimeModal({sb,lesson,memberName,onClose,onSaved}){
     return {s,e:new Date(s.getTime()+d*60000)};
   }
   const t=calc();
-  const changed = t && (t.s.getTime()!==st.getTime() || (en? t.e.getTime()!==en.getTime() : true));
+  const timeChanged = t && (t.s.getTime()!==st.getTime() || (en? t.e.getTime()!==en.getTime() : true));
+  const changed = timeChanged || nameChanged;
 
   async function save(){
     const t=calc();
     if(!t) return setErr('날짜·시작시간·길이(5~300분)를 확인해주세요.');
     setBusy(true); setErr('');
     const sIso=t.s.toISOString(), eIso=t.e.toISOString();
+    const patch={};
+    if(timeChanged){ patch.start_at=sIso; patch.end_at=eIso; }
+    if(nameChanged){ patch.lesson_name=lname||null; patch.title=ltitle.trim()||null; patch.category=lessonCategory(lname); }
 
-    // ① 같은 회원이 그 시각에 이미 다른 수업이 있는지 (자기 자신은 제외)
-    if(lesson.member_id){
+    // ① 같은 회원이 그 시각에 이미 다른 수업이 있는지 (자기 자신은 제외) — 시간을 바꿀 때만 본다
+    if(timeChanged && lesson.member_id){
       const {data:mine}=await sb.from('lessons').select('id,start_at,lesson_name,status')
         .eq('member_id',lesson.member_id).neq('id',lesson.id).neq('status','취소')
         .gte('start_at',new Date(t.s.getTime()-12*3600000).toISOString())
@@ -2141,7 +2754,7 @@ function EditLessonTimeModal({sb,lesson,memberName,onClose,onSaved}){
         return setErr(`이 회원은 그 시각에 이미 수업이 있습니다 (${dup.lesson_name||'수업'} · ${dup.status}). 시간을 바꿔주세요.`); }
     }
     // ② 같은 강사 시간 겹침 — 막지 않고 물어본다(연강·대타 등 실제로 겹칠 수 있다)
-    if(lesson.trainer){
+    if(timeChanged && lesson.trainer){
       const {data:ex}=await sb.from('lessons').select('id,start_at,end_at,lesson_name')
         .eq('trainer',lesson.trainer).eq('status','예약').neq('id',lesson.id)
         .gte('start_at',new Date(t.s.getTime()-12*3600000).toISOString())
@@ -2150,19 +2763,29 @@ function EditLessonTimeModal({sb,lesson,memberName,onClose,onSaved}){
       if(c && !confirm(`⚠️ ${lesson.trainer} 강사가 ${hm(c.start_at)}에 이미 예약이 있습니다 (${c.lesson_name}).\n그래도 이 시간으로 옮길까요?`)){
         setBusy(false); return; }
     }
-    const {error}=await sb.from('lessons').update({start_at:sIso,end_at:eIso}).eq('id',lesson.id);
+    const {error}=await writeSafe('lessons',p=>sb.from('lessons').update(p).eq('id',lesson.id),patch);
     setBusy(false);
     if(error) return setErr('저장 실패: '+error.message);
-    logAct(sb,'수업 시간 변경',`${who}${lesson.lesson_name} · ${fmtDT(lesson.start_at)} → ${fmtDT(sIso)}`);
+    warnDropped('lessons',patch);
+    if(timeChanged) logAct(sb,'수업 시간 변경',`${who}${lesson.lesson_name} · ${fmtDT(lesson.start_at)} → ${fmtDT(sIso)}`);
+    if(nameChanged) logAct(sb,'수업명 변경',`${who}${fmtDT(lesson.start_at)} · ${lessonText(lesson)} → ${lessonText({lesson_name:lname,title:ltitle.trim()})}`);
     onSaved();
   }
 
   return (<div className="modal-ov top" onClick={onClose}><div className="modal" style={{maxWidth:420}} onClick={e=>e.stopPropagation()}>
-    <div className="mhead"><h3>수업 시간 수정</h3><button className="xbtn" onClick={onClose}>✕</button></div>
+    <div className="mhead"><h3>수업 수정</h3><button className="xbtn" onClick={onClose}>✕</button></div>
     <p className="muted" style={{fontSize:13,marginTop:0}}>
-      {who}{lesson.lesson_name} · {lesson.trainer||'강사 미지정'}<br/>
+      {who}{lessonText(lesson)} · {lesson.trainer||'강사 미지정'}<br/>
       <span style={{fontSize:12}}>현재: {fmtDT(lesson.start_at)}{en?` ~ ${hm(lesson.end_at)}`:''} ({curDur}분)</span>
     </p>
+    <div className="row2">
+      <div className="field" style={{width:150}}><label>수업명 <span className="muted">(종류)</span></label>
+        <select value={lname} onChange={e=>setLname(e.target.value)}>
+          {typeOpts.map(o=><option key={o} value={o}>{o}{LESSON_TYPES.includes(o)?'':' (기존 값)'}</option>)}
+        </select></div>
+      <div className="field" style={{flex:1}}><label>일정명 <span className="muted">(선택)</span></label>
+        <input value={ltitle} onChange={e=>setLtitle(e.target.value.slice(0,40))} placeholder="덧붙일 말"/></div>
+    </div>
     <div className="field"><label>날짜</label>
       <input type="date" value={date} onChange={e=>setDate(e.target.value||date)}/></div>
     <div className="row2">
@@ -2178,10 +2801,10 @@ function EditLessonTimeModal({sb,lesson,memberName,onClose,onSaved}){
     {t && <p className="muted" style={{fontSize:12,margin:'-4px 0 10px'}}>
       바꾼 뒤: <b style={{color:'var(--cream)'}}>{fmtDT(t.s.toISOString())} ~ {hm(t.e.toISOString())}</b>
     </p>}
-    <p className="muted" style={{fontSize:12,margin:'0 0 12px'}}>시간만 바뀌고 회차·상태는 그대로입니다.</p>
+    <p className="muted" style={{fontSize:12,margin:'0 0 12px'}}>시간·수업명만 바뀌고 회차·상태는 그대로입니다.</p>
     {err && <div className="err">{err}</div>}
     <button className="btn" style={{width:'100%'}} disabled={busy||!t||!changed} onClick={save}>
-      {busy?'저장 중...':changed?'시간 변경':'변경할 내용이 없습니다'}</button>
+      {busy?'저장 중...':changed?'변경 저장':'변경할 내용이 없습니다'}</button>
   </div></div>);
 }
 
@@ -2252,6 +2875,10 @@ function CalendarView({sb}){
     fetchAll(()=>sb.from('members').select('id,name,phone,status').order('name').order('id')).then(({data})=>setMembers(data||[]));
     sb.from('lessons').select('trainer').not('trainer','is',null).order('start_at',{ascending:false}).limit(5000).then(({data})=>setTrainerPool([...new Set((data||[]).map(r=>r.trainer).filter(Boolean))]));
     sb.from('trainer_colors').select('name,color').then(({data,error})=>{ if(!error&&data){ const m={}; data.forEach(r=>m[r.name]=r.color); setColorOverrides(m); } });
+    // 일(강사별) 격자의 열 = 지금 활성 회원권을 맡고 있는 강사. 수업이 없는 날에도 빈 열로 나와야 비는 시간이 보인다.
+    // (trainerPool은 과거 수업 전체에서 뽑아 퇴사자까지 섞여 있어 열로 쓰기엔 맞지 않다)
+    sb.from('memberships').select('trainer').eq('status','활성').not('trainer','is',null).limit(5000).then(({data})=>
+      setActiveTrainers([...new Set((data||[]).map(r=>String(r.trainer||'').trim()).filter(Boolean))]));
   },[]);
   // 관리도구에서 `?import=1`로 넘어왔으면 가져오기 모달을 자동으로 연다.
   // ★회원 목록이 도착한 뒤에 열어야 한다 — 비어 있는 상태로 검사하면 전부 '회원없음'으로 잡힌다.
@@ -2272,6 +2899,7 @@ function CalendarView({sb}){
   const memberById = useMemo(()=>{ const m={}; members.forEach(x=>m[x.id]=x); return m; },[members]);
   const memberName = id => (memberById[id]&&memberById[id].name) || '?';
   const [trainerPool,setTrainerPool]=useState([]);
+  const [activeTrainers,setActiveTrainers]=useState([]);
   const [trainerFilter,setTrainerFilter]=useState('all');
   const [colorOverrides,setColorOverrides]=useState({});
   const [editColors,setEditColors]=useState(false);
@@ -2340,7 +2968,8 @@ function CalendarView({sb}){
     const {data}=await sb.from('members').select('*').eq('id',l.member_id).single();
     if(!data) return; // RLS로 안 보이는 회원(배정 아님)
     let top=176;
-    try{ const g=e&&e.currentTarget&&e.currentTarget.closest('.cal-grid'); const dow=g&&g.querySelector('.cal-dow');
+    try{ const el=e&&e.currentTarget; const g=el&&(el.closest('.cal-grid')||el.closest('.tg'));
+      const dow=g&&(g.querySelector('.cal-dow')||g.querySelector('.tg-head'));
       if(dow) top=Math.round(dow.getBoundingClientRect().bottom+6); }catch(_){}
     setMemberDetail({member:data,top});
   }
@@ -2414,7 +3043,7 @@ function CalendarView({sb}){
         if(isMonth) d.setMonth(d.getMonth()+n); else d.setDate(d.getDate()+7*n);
         setAnchor(d); setCur(new Date(d.getFullYear(),d.getMonth(),1)); };
       // 칩 라벨: 색으로 강사를 구분하므로 이름은 회원만 (사용자 요청)
-      const label=l=> l.member_id? memberName(l.member_id) : (l.lesson_name||'수업');
+      const label=l=> l.member_id? memberName(l.member_id) : (l.title||l.lesson_name||'수업');
       const evColor=l=> l.trainer? trainerColors[l.trainer] : '#3a4b44';
       const evStyle=l=>{ const bg=evColor(l);
         const s={background:bg,color:trainerFg(bg)};
@@ -2454,7 +3083,7 @@ function CalendarView({sb}){
                 style={{borderLeftColor:tc}} onClick={()=>setSheet(l)}>
                 <div className="ag-time">{hmRange(l)}</div>
                 <div className="ag-body">
-                  <b>{l.member_id?memberName(l.member_id)+' · ':''}{l.lesson_name}</b>
+                  <b>{l.member_id?memberName(l.member_id)+' · ':''}{lessonText(l)}</b>
                   <span className="muted">{l.trainer||'강사 미지정'}{l.noshow_reason?' · 노쇼: '+l.noshow_reason:''}</span>
                 </div>
                 <span className={'mini '+l.status}>{l.status}</span>
@@ -2468,32 +3097,11 @@ function CalendarView({sb}){
           const wk=weekDates.map(d=>(byDate[ymd(d)]||[]));
           const all=wk.flat();
           // 보여줄 시간대: 실제 수업 범위에 맞춰 잘라낸다(빈 새벽·심야를 안 그린다)
-          let h0=7,h1=22;
-          if(all.length){
-            const sh=Math.min(...all.map(l=>new Date(l.start_at).getHours()));
-            const eh=Math.max(...all.map(l=>{const e=l.end_at?new Date(l.end_at):new Date(new Date(l.start_at).getTime()+50*60000);
-              return e.getHours()+(e.getMinutes()>0?1:0);}));
-            h0=Math.min(h0,sh); h1=Math.max(h1,eh);
-          }
+          const [h0,h1]=hourRange(all);
           const hours=Array.from({length:Math.max(1,h1-h0)},(_,i)=>h0+i);
           const H=hours.length*HOUR;
-          // 겹치는 수업은 옆으로 나눠 배치 (강사가 여럿이면 같은 시간에 겹칠 수 있다)
-          const lay=list=>{
-            const evs=list.map(l=>{ const s=new Date(l.start_at);
-              const e=l.end_at?new Date(l.end_at):new Date(s.getTime()+50*60000);
-              return {l,s:s.getHours()*60+s.getMinutes(),e:Math.max(e.getHours()*60+e.getMinutes(),s.getHours()*60+s.getMinutes()+20)};})
-              .sort((a,b)=>a.s-b.s||a.e-b.e);
-            let i=0;
-            while(i<evs.length){                     // 겹침 덩어리 단위로 폭을 나눈다
-              let j=i, end=evs[i].e;
-              while(j+1<evs.length && evs[j+1].s < end){ j++; end=Math.max(end,evs[j].e); }
-              const grp=evs.slice(i,j+1), lanes=[];
-              grp.forEach(ev=>{ let k=0; while(k<lanes.length && lanes[k]>ev.s) k++; ev.lane=k; lanes[k]=ev.e; });
-              grp.forEach(ev=>ev.cols=lanes.length);
-              i=j+1;
-            }
-            return evs;
-          };
+          // 겹치는 수업은 옆으로 나눠 배치 (강사가 여럿이면 같은 시간에 겹칠 수 있다) — PC 일(강사별)과 같은 함수
+          const lay=layoutEvents;
           return (<div className="mw">
             <div className="mw-head">
               <div className="mw-gut"/>
@@ -2552,22 +3160,56 @@ function CalendarView({sb}){
         })()}
       </div>);
     })() : mode==='day' ? (()=>{
+      // ── 일(강사별): 강사가 열, 시간이 행인 격자 ──
+      // 예전엔 강사별로 칩을 위에서부터 쌓기만 해서 "누가 몇 시에 비는지"가 안 보였다.
+      // 시간축을 두면 강사끼리 같은 높이로 맞춰져 빈 시간·겹침이 한눈에 보인다(브로제이 '일(강사별)'과 같은 구조).
       const k=ymd(anchor); const items=(byDate[k]||[]).slice().sort((a,b)=>a.start_at<b.start_at?-1:1);
       const byT={}; items.forEach(l=>{ const t=l.trainer||'미지정'; (byT[t]=byT[t]||[]).push(l); });
-      const cols=Object.keys(byT).sort((a,b)=>a==='미지정'?1:b==='미지정'?-1:a.localeCompare(b,'ko'));
+      // 열: 활성 강사 전원(수업이 없어도 빈 열로) + 그날 수업이 있는 강사. 강사 필터 중이면 그 강사만.
+      const base = trainerFilter==='all'? activeTrainers : [trainerFilter];
+      const cols=[...new Set([...base,...Object.keys(byT).filter(t=>t!=='미지정')])].sort((a,b)=>a.localeCompare(b,'ko'));
+      if(byT['미지정']) cols.push('미지정');
       if(cols.length===0) return <div className="empty" style={{cursor:'pointer'}} onClick={()=>setBooking({date:k})}>이날 수업이 없습니다 · 클릭하여 예약</div>;
-      return (<div className="cal-grid cal-week" style={{gridTemplateColumns:`repeat(${cols.length},minmax(150px,1fr))`}}>
-        {cols.map(t=><div className="cal-dow" key={'h'+t} style={t!=='미지정'&&trainerColors[t]?{color:trainerColors[t],fontWeight:800}:undefined}>{t} · {(byT[t]||[]).length}건</div>)}
-        {cols.map(t=>(<div key={t} className={'cal-cell'+(k===todayKey?' today':'')} onClick={()=>setBooking({date:k})}>
-          <div className="cal-items" onClick={e=>e.stopPropagation()}>
-            {(byT[t]||[]).map(l=>(
-              <button key={l.id} className={'chip '+l.status} style={{...chipStyle(l),fontSize:12,padding:'5px 7px'}}
-                onClick={e=>{e.stopPropagation(); openMemberDetail(l,e);}}
-                onContextMenu={e=>{e.preventDefault();e.stopPropagation(); setCtx({x:e.clientX,y:e.clientY,l});}}>
-                {hmRange(l)} {l.member_id?memberName(l.member_id)+' ':''}{l.lesson_name}
-              </button>))}
+      const HOUR=60;
+      const [h0,h1]=hourRange(items);
+      const hours=Array.from({length:Math.max(1,h1-h0)},(_,i)=>h0+i);
+      const H=hours.length*HOUR;
+      const now=new Date(); const nowTop=((now.getHours()*60+now.getMinutes())-h0*60)/60*HOUR;
+      const showNow = k===todayKey && nowTop>=0 && nowTop<=H;
+      // 빈 칸을 누른 높이 → 30분 단위 시각. 예약 창이 그 시각으로 열린다.
+      const pickTime=e=>{ const r=e.currentTarget.getBoundingClientRect();
+        const min=Math.max(h0*60,Math.min(h1*60-30, h0*60+Math.floor(((e.clientY-r.top)/HOUR)*2)*30));
+        return `${pad(Math.floor(min/60))}:${pad(min%60)}`; };
+      return (<div className="tg-scroll"><div className="tg" style={{'--tgcols':cols.length}}>
+        <div className="tg-head">
+          <div className="tg-gut"/>
+          {cols.map(t=>(<div key={t} className="tg-th">
+            {t!=='미지정' && trainerColors[t] && <i style={{background:trainerColors[t]}}/>}{t}
+            <small>{(byT[t]||[]).filter(l=>l.status!=='휴강').length}건</small></div>))}
+        </div>
+        <div className="tg-body">
+          <div className="tg-times" style={{height:H}}>
+            {hours.map(h=><div key={h} className="tg-t" style={{height:HOUR}}>{pad(h)}:00</div>)}
           </div>
-        </div>))}
+          {cols.map(t=>(
+            <div key={t} className={'tg-col'+(k===todayKey?' today':'')} style={{height:H,backgroundSize:`100% ${HOUR}px`}}
+                 onClick={e=>setBooking({date:k,start:pickTime(e)})}>
+              {showNow && <div className="tg-now" style={{top:nowTop}}/>}
+              {layoutEvents(byT[t]||[]).map(ev=>{ const l=ev.l;
+                const top=(ev.s-h0*60)/60*HOUR, hgt=Math.max(22,(ev.e-ev.s)/60*HOUR-2);
+                return (<button key={l.id} className={'tg-ev st-'+l.status}
+                  style={{...(chipStyle(l)||{}),top,height:hgt,left:`calc(${ev.lane/ev.cols*100}% + 2px)`,width:`calc(${100/ev.cols}% - 4px)`}}
+                  title={`${hmRange(l)} · ${l.member_id?memberName(l.member_id)+' · ':''}${lessonText(l)} · ${l.status}`}
+                  onClick={e=>{e.stopPropagation(); openMemberDetail(l,e);}}
+                  onContextMenu={e=>{e.preventDefault();e.stopPropagation(); setCtx({x:e.clientX,y:e.clientY,l});}}>
+                  <i>{hmRange(l)}{l.status!=='예약'?' · '+l.status:''}</i>
+                  <b>{l.member_id?memberName(l.member_id):(l.title||l.lesson_name||'수업')}</b>
+                  {hgt>=46 && <span>{lessonText(l)}</span>}
+                </button>); })}
+            </div>))}
+        </div>
+      </div>
+      <div className="muted" style={{fontSize:12,margin:'8px 2px 40px'}}>빈 칸 클릭 = 그 시각에 예약 · 수업 클릭 = 회원 상세 · 우클릭 = 완료/휴강/노쇼 · 열은 활성 회원권을 맡은 강사입니다</div>
       </div>);
     })() : mode==='week' ? (
     <div className="cal-grid cal-week">
@@ -2580,7 +3222,7 @@ function CalendarView({sb}){
               <button key={l.id} className={'chip '+l.status} style={chipStyle(l)}
                 onClick={e=>{e.stopPropagation(); openMemberDetail(l,e);}}
                 onContextMenu={e=>{e.preventDefault();e.stopPropagation(); setCtx({x:e.clientX,y:e.clientY,l});}}>
-                {hmRange(l)} {l.member_id?memberName(l.member_id)+' ':''}{l.lesson_name}
+                {hmRange(l)} {l.member_id?memberName(l.member_id)+' ':''}{lessonText(l)}
               </button>))}
           </div>
         </div>); })}
@@ -2597,7 +3239,7 @@ function CalendarView({sb}){
               <button key={l.id} className={'chip '+l.status} style={chipStyle(l)}
                 onClick={e=>{e.stopPropagation(); openMemberDetail(l,e);}}
                 onContextMenu={e=>{e.preventDefault();e.stopPropagation(); setCtx({x:e.clientX,y:e.clientY,l});}}>
-                {hmRange(l)} {l.member_id?memberName(l.member_id)+' ':''}{l.lesson_name}
+                {hmRange(l)} {l.member_id?memberName(l.member_id)+' ':''}{lessonText(l)}
               </button>))}
           </div>
           {items.length>0 && <button className="morebtn" onClick={e=>{e.stopPropagation(); setDayView({date:k});}}>전체 {items.length}건 ▸</button>}
@@ -2606,16 +3248,16 @@ function CalendarView({sb}){
     )}
 
     {ctx && (<CtxMenu x={ctx.x} y={ctx.y} onClose={()=>setCtx(null)}>
-      <div className="ctx-head">{ctx.l.member_id?memberName(ctx.l.member_id)+' · ':''}{ctx.l.lesson_name} · {hmRange(ctx.l)}</div>
+      <div className="ctx-head">{ctx.l.member_id?memberName(ctx.l.member_id)+' · ':''}{lessonText(ctx.l)} · {hmRange(ctx.l)}</div>
       <button onClick={()=>setStatus(ctx.l,'완료')}>✓ 수업 완료</button>
       <button onClick={()=>setStatus(ctx.l,'휴강')}>⊘ 수업 휴강 (+1 복구)</button>
       <button onClick={()=>setNoshow(ctx.l)}>✗ 수업 노쇼 (차감 유지)</button>
       {(ctx.l.status!=='예약') && <button onClick={()=>setStatus(ctx.l,'예약')}>↺ 예약으로 되돌리기</button>}
-      <button onClick={()=>{ setEditTime(ctx.l); setCtx(null); }}>🕐 수업 시간 수정</button>
+      <button onClick={()=>{ setEditTime(ctx.l); setCtx(null); }}>✎ 수업 수정 (시간·수업명)</button>
       <button className="danger" onClick={()=>del(ctx.l)}>🗑 수업 삭제</button>
     </CtxMenu>)}
 
-    {booking && <BookingModal sb={sb} date={booking.date} members={members} trainers={trainers}
+    {booking && <BookingModal sb={sb} date={booking.date} start={booking.start} members={members} trainers={trainers}
         onClose={()=>setBooking(null)} onSaved={()=>{setBooking(null);loadLessons();}}/>}
     {importer && <ScheduleImportModal sb={sb} members={members} trainers={trainers} handoff={handoff}
         onClose={()=>{setImporter(false);setHandoff(null);}} onSaved={()=>loadLessons()}/>}
@@ -2639,14 +3281,14 @@ function CalendarView({sb}){
       <div className="sheet-ov" onClick={()=>setSheet(null)}/>
       <div className="sheet">
         <div className="sheet-head">
-          <b>{sheet.member_id?memberName(sheet.member_id)+' · ':''}{sheet.lesson_name}</b>
+          <b>{sheet.member_id?memberName(sheet.member_id)+' · ':''}{lessonText(sheet)}</b>
           <span className="muted">{hmRange(sheet)} · {sheet.trainer||'강사 미지정'} · <span className={'mini '+sheet.status}>{sheet.status}</span></span>
         </div>
         <button onClick={()=>{setStatus(sheet,'완료');setSheet(null);}}>✓ 수업 완료</button>
         <button onClick={()=>{setStatus(sheet,'휴강');setSheet(null);}}>⊘ 휴강 (+1 복구)</button>
         <button onClick={()=>{setNoshow(sheet);setSheet(null);}}>✗ 노쇼 (차감 유지)</button>
         {sheet.status!=='예약' && <button onClick={()=>{setStatus(sheet,'예약');setSheet(null);}}>↺ 예약으로 되돌리기</button>}
-        <button onClick={()=>{setEditTime(sheet);setSheet(null);}}>🕐 수업 시간 수정</button>
+        <button onClick={()=>{setEditTime(sheet);setSheet(null);}}>✎ 수업 수정 (시간·수업명)</button>
         <button className="danger" onClick={()=>{del(sheet);setSheet(null);}}>🗑 수업 삭제</button>
         <button className="cancel" onClick={()=>setSheet(null)}>닫기</button>
       </div>
@@ -3250,12 +3892,24 @@ function SalesView({sb}){
   const [mode,setMode]=useState('month'); // month=월별 상세 / report=경영 리포트
   const [rates,setRates]=useState({});   // 강사별 정산율% (trainer_rates, 마스터 전용)
   const rateTimer=useRef({});
-  useEffect(()=>{
+  // 거래 내역 필터 (브로제이 '매출내역' 필터 대조로 추가). from/to는 보는 달 안에서의 기간.
+  const [tf,setTf]=useState({method:'',pay:'',reg:'',trainer:'',q:'',from:'',to:''});
+  const setF=(k,v)=>setTf(p=>({...p,[k]:v}));
+  const [openM,setOpenM]=useState(null);  // 행 클릭 → 회원 상세
+  function loadAll(){
     fetchAll(()=>sb.from('payments').select('*').order('paid_at',{ascending:false}).order('id')).then(({data})=>setPays(data||[]));
     fetchAll(()=>sb.from('members').select('id,name').order('id')).then(({data})=>setMembers(data||[]));
-    fetchAll(()=>sb.from('memberships').select('id,member_id,unpaid,trainer,status,start_date,end_date').order('id')).then(({data})=>{ setMsAll(data||[]); setUnpaidSum((data||[]).reduce((s,m)=>s+(m.unpaid||0),0)); });
+    fetchAll(()=>sb.from('memberships').select('id,member_id,product_name,unpaid,trainer,status,start_date,end_date').order('id')).then(({data})=>{ setMsAll(data||[]); setUnpaidSum((data||[]).reduce((s,m)=>s+(m.unpaid||0),0)); });
+  }
+  useEffect(()=>{
+    loadAll();
     if(role==='master') sb.from('trainer_rates').select('*').then(({data})=>{ const o={}; (data||[]).forEach(r=>o[r.name]=r.rate); setRates(o); });
   },[]);
+  async function openMember(id){
+    if(!id) return;
+    const {data}=await sb.from('members').select('*').eq('id',id).single();
+    if(data) setOpenM(data);   // RLS로 안 보이는 회원이면 조용히 무시
+  }
   function setRate(name,v){
     const rate=Math.max(0,Math.min(100,parseInt(String(v).replace(/\D/g,''))||0));
     setRates(p=>({...p,[name]:rate}));
@@ -3285,12 +3939,51 @@ function SalesView({sb}){
   monthPays.forEach(p=>{const d=parseInt((p.paid_at||'').slice(8,10)); if(d>=1&&d<=daysInMonth)byDay[d-1]+=(p.amount||0);});
   const maxDay=Math.max(1,...byDay);
   const byMethod={}; monthPays.forEach(p=>{const k=p.pay_method||'미지정'; byMethod[k]=(byMethod[k]||0)+(p.amount||0);});
+  // ── 거래 내역 필터 ──
+  const msById=useMemo(()=>{ const o={}; msAll.forEach(m=>o[m.id]=m); return o; },[msAll]);
+  const payMs=p=> p.membership_id? msById[p.membership_id]||null : null;
+  const payTrainer=p=>{ const m=payMs(p); return m&&m.trainer? String(m.trainer).trim() : ''; };
+  const payProduct=p=>{ const m=payMs(p); return m? m.product_name||'' : ''; };
+  const regKind=p=>{ const l=regLabel(p); return l==='환불'||l==='미수금'||l==='신규'? l : l.startsWith('재등록')? '재등록' : '기타'; };
+  const uniqS=arr=>[...new Set(arr.map(s=>String(s||'').trim()).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ko'));
+  const methodOpts=uniqS(monthPays.map(p=>p.method));
+  const payOpts=uniqS(monthPays.map(p=>p.pay_method||'미지정'));
+  const trainerOptsS=uniqS(monthPays.map(payTrainer));
+  const viewPays=monthPays.filter(p=>{
+    const d=(p.paid_at||'').slice(0,10);
+    if(tf.from && d<tf.from) return false;
+    if(tf.to && d>tf.to) return false;
+    if(tf.method && (p.method||'')!==tf.method) return false;
+    if(tf.pay && (p.pay_method||'미지정')!==tf.pay) return false;
+    if(tf.reg && regKind(p)!==tf.reg) return false;
+    if(tf.trainer && payTrainer(p)!==tf.trainer) return false;
+    if(tf.q.trim()){ const nq=tf.q.trim(); if(!((nameById[p.member_id]||'').includes(nq) || payProduct(p).includes(nq))) return false; }
+    return true; });
+  const filtOn=!!(tf.method||tf.pay||tf.reg||tf.trainer||tf.q.trim()||tf.from||tf.to);
+  const vTotal=viewPays.reduce((s,p)=>s+(p.amount||0),0);
+  const vSales=viewPays.filter(p=>(p.amount||0)>0).reduce((s,p)=>s+p.amount,0);
+  const vRefund=viewPays.filter(p=>(p.amount||0)<0).reduce((s,p)=>s+p.amount,0);
+  const vByPay={}; viewPays.forEach(p=>{ const k=p.pay_method||'미지정'; vByPay[k]=(vByPay[k]||0)+(p.amount||0); });
+  const monthFirst=`${ym}-01`, monthLast=`${ym}-${pad(daysInMonth)}`;
+  // 미수금 내역: 미수금이 남은 회원권 (큰 금액부터)
+  const unpaidList=useMemo(()=>msAll.filter(m=>(m.unpaid||0)>0).sort((a,b)=>(b.unpaid||0)-(a.unpaid||0)),[msAll]);
   function exportCSV(){
-    const rows=[['거래일','회원','구분','등록구분','결제수단','금액']];
-    monthPays.forEach(p=>rows.push([fmtDate(p.paid_at),nameById[p.member_id]||'',p.method||'',regLabel(p),p.pay_method||'',p.amount||0]));
-    downloadCSV(`매출_${ym}.csv`,rows);
+    const rows=[['거래일','회원','상품','구분','등록구분','결제수단','담당강사','금액']];
+    viewPays.forEach(p=>rows.push([fmtDate(p.paid_at),nameById[p.member_id]||'',payProduct(p),p.method||'',regLabel(p),p.pay_method||'',payTrainer(p),p.amount||0]));
+    downloadCSV(`매출_${ym}${filtOn?'_필터':''}.csv`,rows);
   }
-  function move(delta){ setRef(r=>{ let m=r.m+delta,y=r.y; if(m<0){m=11;y--;} if(m>11){m=0;y++;} return {y,m}; }); }
+  // 달을 옮기면 기간 지정은 푼다(다른 달 날짜가 남으면 목록이 통째로 비어 보인다)
+  function move(delta){ setRef(r=>{ let m=r.m+delta,y=r.y; if(m<0){m=11;y--;} if(m>11){m=0;y++;} return {y,m}; }); setTf(p=>({...p,from:'',to:''})); }
+  // 기간 빠른 선택: 오늘 / 이번 주 / 이번 달 전체. 목록이 '달' 단위라 이번 주가 달을 넘으면 이번 달 쪽만 본다.
+  function preset(kind){
+    const d=new Date(), y=d.getFullYear(), m=d.getMonth();
+    setRef({y,m});
+    if(kind==='today'){ const t=ymd(d); setTf(p=>({...p,from:t,to:t})); }
+    else if(kind==='week'){ const s=new Date(y,m,d.getDate()-d.getDay()), e=new Date(y,m,d.getDate()-d.getDay()+6);
+      const ms=new Date(y,m,1), me=new Date(y,m+1,0);
+      setTf(p=>({...p,from:ymd(s<ms?ms:s),to:ymd(e>me?me:e)})); }
+    else setTf(p=>({...p,from:'',to:''}));
+  }
   // 강사별 실적: 해당월 수업(상태별) + 수업회원수 + 매출기여(결제→회원권 trainer 기준)
   const trainerByMs=useMemo(()=>{ const o={}; msAll.forEach(m=>o[m.id]=m.trainer||null); return o; },[msAll]);
   const trainerStats=useMemo(()=>{ const st={};
@@ -3422,20 +4115,68 @@ function SalesView({sb}){
           </tr>))}</tbody></table>}
       <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>매출 기여 = 이달 결제 중 해당 강사 담당 회원권으로 들어온 금액.{role==='master'?' 정산액 = 매출 기여 × 정산율(%). 정산율은 자동 저장되며 마스터에게만 보입니다.':''}</p>
     </div>
+    <div className="mp-cardbox" style={{marginBottom:16}}>
+      <h3><span>미수금 내역 {unpaidList.length?`(${unpaidList.length})`:''}</span>
+        <span className="muted" style={{textTransform:'none',letterSpacing:0,fontWeight:600,color:unpaidSum>0?'#d98b7a':undefined}}>합계 {unpaidSum.toLocaleString()}원</span></h3>
+      {unpaidList.length===0? <div className="muted">미수금이 남은 회원권이 없습니다</div> :
+        <div className="xscroll"><table className="ptable">
+          <thead><tr><th>회원</th><th>회원권</th><th>담당</th><th>상태</th><th>만료일</th><th style={{textAlign:'right'}}>미수금</th></tr></thead>
+          <tbody>{unpaidList.map(m=>(<tr key={m.id} className="clk" onClick={()=>openMember(m.member_id)} title="눌러서 회원 상세 열기 (미수금 수납)">
+            <td style={{fontWeight:700}}>{nameById[m.member_id]||'-'}</td>
+            <td>{m.product_name||'-'}</td>
+            <td className="muted">{m.trainer||'-'}</td>
+            <td><span className={'badge b-'+(m.status||'')}>{m.status||'-'}</span></td>
+            <td className="muted">{m.end_date?fmtDate(m.end_date):'무기한'}</td>
+            <td style={{textAlign:'right',color:'#d98b7a',fontWeight:700}}>{(m.unpaid||0).toLocaleString()}원</td>
+          </tr>))}</tbody></table></div>}
+      <p className="muted" style={{fontSize:12,margin:'8px 0 0'}}>월과 상관없이 지금 남아 있는 미수금 전체입니다. 행을 누르면 회원 상세에서 바로 수납할 수 있습니다.</p>
+    </div>
     <div className="mp-cardbox">
-      <h3><span>거래 내역 {monthPays.length?`(${monthPays.length})`:''}</span>{monthPays.length>0 && <button className="btn ghost sm" onClick={exportCSV}>⤓ 엑셀 내보내기</button>}</h3>
+      <h3><span>거래 내역 {pays===null?'':filtOn?`(${viewPays.length} / ${monthPays.length})`:monthPays.length?`(${monthPays.length})`:''}</span>{viewPays.length>0 && <button className="btn ghost sm" onClick={exportCSV}>⤓ 엑셀 내보내기</button>}</h3>
+      {pays!==null && <>
+        <div className="sfilt">
+          <div className="seg sfilt-seg">
+            <button className={!tf.from&&!tf.to?'on':''} onClick={()=>setTf(p=>({...p,from:'',to:''}))}>{ref.m+1}월 전체</button>
+            <button onClick={()=>preset('today')}>오늘</button>
+            <button onClick={()=>preset('week')}>이번 주</button>
+          </div>
+          <input type="date" className="barsel" value={tf.from} min={monthFirst} max={monthLast} onChange={e=>setF('from',e.target.value)} title="기간 시작"/>
+          <span className="muted">~</span>
+          <input type="date" className="barsel" value={tf.to} min={monthFirst} max={monthLast} onChange={e=>setF('to',e.target.value)} title="기간 끝"/>
+        </div>
+        <div className="sfilt">
+          <select className="barsel" value={tf.method} onChange={e=>setF('method',e.target.value)}><option value="">구분 전체</option>{methodOpts.map(o=><option key={o} value={o}>{o}</option>)}</select>
+          <select className="barsel" value={tf.reg} onChange={e=>setF('reg',e.target.value)}><option value="">등록구분 전체</option>{['신규','재등록','미수금','환불','기타'].map(o=><option key={o} value={o}>{o}</option>)}</select>
+          <select className="barsel" value={tf.pay} onChange={e=>setF('pay',e.target.value)}><option value="">결제수단 전체</option>{payOpts.map(o=><option key={o} value={o}>{o}</option>)}</select>
+          <select className="barsel" value={tf.trainer} onChange={e=>setF('trainer',e.target.value)}><option value="">담당강사 전체</option>{trainerOptsS.map(o=><option key={o} value={o}>{o}</option>)}</select>
+          <input className="barsel sfilt-q" value={tf.q} onChange={e=>setF('q',e.target.value)} placeholder="회원 · 상품 검색"/>
+          {filtOn && <button className="link" style={{margin:0,fontSize:12}} onClick={()=>setTf({method:'',pay:'',reg:'',trainer:'',q:'',from:'',to:''})}>필터 초기화</button>}
+        </div>
+        {filtOn && <div className="sfilt-sum">
+          <span>필터 합계 <b style={{color:'var(--brass)'}}>{vTotal.toLocaleString()}원</b></span>
+          <span>{viewPays.length}건</span>
+          {vRefund<0 && <span>판매 {vSales.toLocaleString()} · 환불 {vRefund.toLocaleString()}</span>}
+          {Object.keys(vByPay).length>0 && <span className="muted">{Object.entries(vByPay).map(([k,v])=>`${k} ${v.toLocaleString()}`).join(' · ')}</span>}
+        </div>}
+      </>}
       {pays===null? <div className="muted">불러오는 중...</div> :
         monthPays.length===0? <div className="muted">거래 내역이 없습니다</div> :
-        <table className="ptable"><thead><tr><th>거래일</th><th>회원</th><th>구분</th><th>등록구분</th><th style={{textAlign:'right'}}>금액</th></tr></thead>
-          <tbody>{monthPays.map(p=>(<tr key={p.id}>
-            <td>{fmtDate(p.paid_at)}</td><td>{nameById[p.member_id]||'-'}</td>
+        viewPays.length===0? <div className="muted" style={{padding:'14px 0'}}>조건에 맞는 거래가 없습니다</div> :
+        <div className="xscroll"><table className="ptable">
+          <thead><tr><th>거래일</th><th>회원</th><th>상품</th><th>구분</th><th>등록구분</th><th>결제수단</th><th>담당</th><th style={{textAlign:'right'}}>금액</th></tr></thead>
+          <tbody>{viewPays.map(p=>(<tr key={p.id} className={p.member_id?'clk':''} onClick={()=>openMember(p.member_id)} title={p.member_id?'눌러서 회원 상세 열기':undefined}>
+            <td style={{whiteSpace:'nowrap'}}>{fmtDate(p.paid_at)}</td><td style={{fontWeight:700,whiteSpace:'nowrap'}}>{nameById[p.member_id]||'-'}</td>
+            <td className="muted" style={{fontSize:13}}>{payProduct(p)||'-'}</td>
             <td style={p.amount<0?{color:'#d98b7a'}:undefined}>{p.method||'-'}</td>
-            <td className="muted" style={{fontSize:13}}>{regLabel(p)}</td>
-            <td style={{textAlign:'right',color:p.amount<0?'#d98b7a':undefined}}>{(p.amount||0).toLocaleString()}원</td>
-          </tr>))}</tbody></table>}
+            <td className="muted" style={{fontSize:13,whiteSpace:'nowrap'}}>{regLabel(p)}</td>
+            <td className="muted" style={{fontSize:13}}>{p.pay_method||'-'}</td>
+            <td className="muted" style={{fontSize:13}}>{payTrainer(p)||'-'}</td>
+            <td style={{textAlign:'right',whiteSpace:'nowrap',color:p.amount<0?'#d98b7a':undefined}}>{(p.amount||0).toLocaleString()}원</td>
+          </tr>))}</tbody></table></div>}
     </div>
     <p className="muted" style={{fontSize:12,marginTop:14}}>※ 앱에서 회원권/레슨 등록 시 기록된 결제만 집계됩니다. 브로제이 과거 매출은 반영되지 않습니다.</p>
     </>}
+    {openM && <Detail sb={sb} member={openM} onClose={()=>{ setOpenM(null); loadAll(); }}/>}
   </div>);
 }
 

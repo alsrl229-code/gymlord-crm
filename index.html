@@ -291,8 +291,8 @@
     .main{padding:56px 14px calc(72px + env(safe-area-inset-bottom))}
     .mpage{left:0;padding-bottom:calc(72px + env(safe-area-inset-bottom))}
     .mp-body{padding:14px 14px calc(20px + env(safe-area-inset-bottom))}
-    .mlist-table .row{grid-template-columns:32px 34px 62px minmax(0,1fr) 96px;gap:6px;padding:12px 10px}
-    .mlist-table .row>div:nth-child(5),.mlist-table .row>div:nth-child(6){display:none}
+    /* 회원 목록의 모바일 칸 배치는 스타일 맨 끝 '브로제이 대조 보완' 블록으로 옮겼다
+       (컬럼을 켜고 끌 수 있게 되면서 nth-child로는 어느 칸인지 특정할 수 없다 → 칸마다 c-클래스로 고른다) */
     .mlist-table .name{white-space:normal;line-height:1.22;word-break:keep-all;overflow-wrap:anywhere}
     .mlist-table .phone{white-space:normal;line-height:1.22;overflow-wrap:anywhere;font-size:13px}
     .row.logrow{grid-template-columns:110px 100px 1fr;} .row.logrow>div:last-child{display:none}
@@ -637,10 +637,107 @@
   .permgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:8px}
   .permchk{display:flex;align-items:center;gap:7px;font-size:13px;padding:8px 10px;border:1px solid var(--line);border-radius:9px;cursor:pointer;color:var(--muted)}
   .permchk.on{border-color:var(--brass);background:rgba(176,141,87,.1);color:var(--cream)}
+
+  /* 화면 바로 아래에서 띄운 창(.modal-ov)은 .main의 직계 div라서 위 `.main>div{max-width:1240px;margin:0 auto}`에 걸린다
+     → 1240px보다 넓은 화면에서 어두운 배경이 양옆을 덜 덮었다. 창 배경은 폭 제한을 받지 않게 한다. */
+  .main>div.modal-ov{max-width:none;margin:0}
+
+  /* ───────── 브로제이 대조 보완 (2026-11) ───────── */
+  /* 회원 목록 / 회원권 목록 — 컬럼 수가 바뀌는 격자.
+     ★격자 폭은 인라인 style이 아니라 CSS 변수(--cols, --minw)로 받는다.
+       인라인으로 주면 아래 모바일 미디어쿼리가 못 이겨서 폰 화면이 깨진다. */
+  .list.xscroll{overflow-x:auto;overflow-y:hidden}
+  .xscroll{overflow-x:auto}
+  .mlist-table,.mslist{min-width:var(--minw,0)}
+  .mlist-table .row>div,.mslist .row>div{min-width:0}
+  @media(min-width:861px){
+    .mlist-table .row,.mslist .row{grid-template-columns:var(--cols)}
+  }
+  .row .num{text-align:right;font-variant-numeric:tabular-nums}
+  .row .ell{display:block;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .row.head .sortable{cursor:pointer;user-select:none;white-space:nowrap}
+  .row.head .sortable:hover{color:var(--cream)}
+  .row .m-sub{display:none}
+  .row .dd{font-size:11px;color:var(--muted);margin-left:2px;white-space:nowrap}
+  .row .dd.soon{color:#e0a23c}
+  .row .dd.over{color:#d98b7a}
+  .subseg{display:inline-flex;margin:16px 0 0}
+  .subseg button{flex:none;padding:8px 18px;white-space:nowrap}
+  .barsel{background:var(--forest2);border:1px solid var(--line);border-radius:10px;padding:9px 12px;color:var(--cream);font-size:14px;cursor:pointer;font-family:inherit}
+  .barnum{display:inline-flex;align-items:center;gap:6px;font-size:13px;color:var(--muted);white-space:nowrap}
+  .barnum input{width:46px;background:var(--forest2);border:1px solid var(--line);border-radius:8px;padding:8px 6px;color:var(--cream);font-size:14px;text-align:center}
+  .btn.ghost.act{border-color:var(--brass);color:var(--brass)}
+  .fchips{display:flex;flex-wrap:wrap;gap:6px 8px;align-items:center;margin:-4px 0 12px}
+  .fchip{background:rgba(176,141,87,.14);color:var(--brass);border:1px solid rgba(176,141,87,.35);border-radius:20px;padding:3px 10px;font-size:12px;font-weight:600;cursor:pointer}
+  .fchip:hover{background:rgba(176,141,87,.24)}
+  .colpick{display:grid;grid-template-columns:repeat(auto-fill,minmax(118px,1fr));gap:8px}
+  .colpick-it{padding:8px 10px;border:1px solid var(--line);border-radius:9px}
+  .colpick-it.on{border-color:var(--brass);background:rgba(176,141,87,.1);color:var(--cream)}
+  .seg.seg-wrap{flex-wrap:wrap}
+  .seg.seg-wrap button{flex:1 1 auto;padding:8px 10px;white-space:nowrap}
+  /* 잔여(실잔여 + 예약) 게이지: 진한 부분=더 예약 가능, 옅은 부분=이미 예약된 수업 */
+  .gauge.split{display:flex}
+  .gauge.split>i{flex:none}
+  .gauge>i.bk{opacity:.42}
+  .ms-sub{font-size:12px;color:var(--muted);margin-top:5px}
+  .ms-sub b{color:var(--cream)}
+  /* 매출 — 거래 내역 필터 */
+  .ptable tr.clk{cursor:pointer}
+  .sfilt{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:0 0 10px}
+  .sfilt .barsel{padding:7px 10px;font-size:13px;border-radius:8px}
+  .sfilt-seg{flex:none}
+  .sfilt-seg button{flex:none;padding:7px 12px;font-size:13px;white-space:nowrap}
+  .sfilt-q{flex:1;min-width:140px;cursor:text}
+  .sfilt-sum{display:flex;flex-wrap:wrap;gap:6px 16px;font-size:13px;padding:9px 12px;margin:0 0 10px;
+    background:rgba(176,141,87,.07);border:1px solid var(--brassline);border-radius:9px}
+  /* 캘린더 일(강사별) — 강사=열, 시간=행 */
+  .tg-scroll{overflow-x:auto}
+  .tg{border:1px solid var(--line);border-radius:10px;overflow:hidden;background:var(--line);
+    min-width:calc(56px + var(--tgcols) * 132px)}
+  .tg-head,.tg-body{display:grid;grid-template-columns:56px repeat(var(--tgcols),minmax(130px,1fr));gap:1px}
+  .tg-head{border-bottom:1px solid var(--line)}
+  .tg-gut{background:#11201b}
+  .tg-th{background:#11201b;color:var(--cream);padding:9px 6px 8px;font-size:13px;font-weight:800;
+    display:flex;align-items:center;justify-content:center;gap:6px}
+  .tg-th>i{width:10px;height:10px;border-radius:50%;flex:none}
+  .tg-th small{color:var(--muted);font-size:11px;font-weight:600}
+  .tg-times{background:var(--forest)}
+  .tg-t{font-size:11px;color:var(--muted);text-align:right;padding:3px 8px 0;border-top:1px solid var(--line);box-sizing:border-box}
+  .tg-t:first-child{border-top:none}
+  .tg-col{position:relative;background-color:var(--forest2);cursor:pointer;
+    background-image:repeating-linear-gradient(to bottom,var(--line) 0 1px,transparent 1px 100%)}
+  .tg-col:hover{background-color:#172b25}
+  .tg-col.today{background-color:rgba(176,141,87,.06)}
+  .tg-ev{position:absolute;border:none;border-left:3px solid rgba(0,0,0,.28);border-radius:6px;padding:3px 7px;overflow:hidden;
+    text-align:left;font-family:inherit;cursor:pointer;display:flex;flex-direction:column;gap:1px;line-height:1.25;
+    background:#24423a;color:var(--cream);box-shadow:0 1px 3px rgba(0,0,0,.35)}
+  .tg-ev i{font-style:normal;font-size:10.5px;opacity:.82;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tg-ev b{font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tg-ev span{font-size:11px;opacity:.85;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .tg-ev:hover{filter:brightness(1.12);z-index:2}
+  .tg-now{position:absolute;left:0;right:0;border-top:2px solid #d98b7a;z-index:1;pointer-events:none}
+  /* 모바일: 목록은 핵심 칸만 남긴다. ★이 블록은 스타일 맨 끝에 있어야 한다 —
+     미디어쿼리는 우선순위를 올려주지 않아서, 같은 선택자면 파일에서 뒤에 온 쪽이 이긴다. */
+  @media(max-width:860px){
+    .mlist-table,.mslist{min-width:0}
+    .mlist-table .row{grid-template-columns:32px 34px 62px minmax(0,1fr) 96px;gap:6px;padding:12px 10px}
+    .mlist-table .row>div{display:none}
+    .mlist-table .row>.c-chk,.mlist-table .row>.c-no,.mlist-table .row>.c-status,
+    .mlist-table .row>.c-name,.mlist-table .row>.c-phone{display:block}
+    .mslist .row{grid-template-columns:56px minmax(0,1fr) 50px 56px;gap:6px;padding:12px 10px}
+    .mslist .row>div{display:none}
+    .mslist .row>.c-status,.mslist .row>.c-product,.mslist .row>.c-remain,.mslist .row>.c-real{display:block}
+    .mlist-table .row:not(.head) .m-sub,.mslist .row:not(.head) .m-sub{display:block;font-size:11.5px;color:var(--muted);
+      margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .only-desk{display:none}
+    .subseg{display:flex;margin-top:6px}
+    .subseg button{flex:1}
+    .barsel{padding:8px 10px;font-size:13px}
+  }
 </style>
 </head>
 <body>
 <div id="root"></div>
-<script src="app.bundle.js?v=88"></script>
+<script src="app.bundle.js?v=89"></script>
 </body>
 </html>
